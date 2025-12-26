@@ -144,10 +144,14 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 	}
 	v.onUsers.Range(func(key, value interface{}) bool {
 		user := value.(map[string]any)["u"].(*protocol.MemoryUser)
-		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, user, &v.onUsers, command)
+		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, user, command)
 		if u == nil {
 			return true
 		}
+		v.onUsers.Store(u.Email, map[string]any{
+			"date": time.Now(),
+			"u":    u,
+		})
 		return false
 	})
 	if u != nil {
@@ -155,10 +159,14 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 	}
 	v.users.Range(func(key, value interface{}) bool {
 		user := value.(*protocol.MemoryUser)
-		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, user, &v.onUsers, command)
+		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, user, command)
 		if u == nil {
 			return true
 		}
+		v.onUsers.Store(u.Email, map[string]any{
+			"date": time.Now(),
+			"u":    u,
+		})
 		return false
 	})
 	if u != nil {
@@ -178,7 +186,7 @@ func (v *Validator) GetBehaviorSeed() uint64 {
 	return v.behaviorSeed
 }
 
-func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, onUsers *sync.Map, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
+func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	account := user.Account.(*MemoryAccount)
 	aeadCipher := account.Cipher.(*AEADCipher)
 	ivLen = aeadCipher.IVSize()
@@ -200,10 +208,6 @@ func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, onUsers *sync.Map, 
 	if matchErr == nil {
 		u = user
 		err = account.CheckIV(iv)
-		onUsers.Store(u.Email, map[string]any{
-			"date": time.Now(),
-			"u":    u,
-		})
 		return
 	}
 	return nil, nil, nil, 0, matchErr
