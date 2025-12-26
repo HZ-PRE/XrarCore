@@ -4,6 +4,7 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
+	"fmt"
 	"hash/crc64"
 	"strings"
 	"sync"
@@ -16,8 +17,11 @@ import (
 // Validator stores valid Shadowsocks users.
 type Validator struct {
 	sync.RWMutex
-	users []*protocol.MemoryUser
-
+	users         sync.Map
+	legacyUsers   sync.Map
+	userSize      uint64
+	viUsers       sync.Map
+	ivLen         int32
 	behaviorSeed  uint64
 	behaviorFused bool
 }
@@ -30,11 +34,15 @@ func (v *Validator) Add(u *protocol.MemoryUser) error {
 	defer v.Unlock()
 
 	account := u.Account.(*MemoryAccount)
-	if !account.Cipher.IsAEAD() && len(v.users) > 0 {
-		return errors.New("The cipher is not support Single-port Multi-user")
+	email := strings.ToLower(u.Email)
+	v.userSize = v.userSize + 1
+	if _, ok := v.legacyUsers.Load(email); ok && !account.Cipher.IsAEAD() {
+		v.legacyUsers.Store(email, u)
+		return nil
 	}
-	v.users = append(v.users, u)
-
+	v.users.Store(u.Email, u)
+	aeadCipher := account.Cipher.(*AEADCipher)
+	v.ivLen = aeadCipher.IVSize()
 	if !v.behaviorFused {
 		hashkdf := hmac.New(sha256.New, []byte("SSBSKDF"))
 		hashkdf.Write(account.Key)
@@ -54,23 +62,9 @@ func (v *Validator) Del(email string) error {
 	defer v.Unlock()
 
 	email = strings.ToLower(email)
-	idx := -1
-	for i, u := range v.users {
-		if strings.EqualFold(u.Email, email) {
-			idx = i
-			break
-		}
-	}
-
-	if idx == -1 {
-		return errors.New("User ", email, " not found.")
-	}
-	ulen := len(v.users)
-
-	v.users[idx] = v.users[ulen-1]
-	v.users[ulen-1] = nil
-	v.users = v.users[:ulen-1]
-
+	v.legacyUsers.Delete(email)
+	v.users.Delete(email)
+	v.userSize = v.userSize - 1
 	return nil
 }
 
@@ -82,12 +76,12 @@ func (v *Validator) GetByEmail(email string) *protocol.MemoryUser {
 
 	v.Lock()
 	defer v.Unlock()
-
 	email = strings.ToLower(email)
-	for _, u := range v.users {
-		if strings.EqualFold(u.Email, email) {
-			return u
-		}
+	if value, ok := v.legacyUsers.Load(email); ok {
+		return value.(*protocol.MemoryUser)
+	}
+	if value, ok := v.users.Load(email); ok {
+		return value.(*protocol.MemoryUser)
 	}
 	return nil
 }
@@ -96,61 +90,97 @@ func (v *Validator) GetByEmail(email string) *protocol.MemoryUser {
 func (v *Validator) GetAll() []*protocol.MemoryUser {
 	v.Lock()
 	defer v.Unlock()
-	dst := make([]*protocol.MemoryUser, len(v.users))
-	copy(dst, v.users)
-	return dst
+	var u = make([]*protocol.MemoryUser, 0, 100)
+	v.users.Range(func(key, value interface{}) bool {
+		u = append(u, value.(*protocol.MemoryUser))
+		return true
+	})
+	v.legacyUsers.Range(func(key, value interface{}) bool {
+		u = append(u, value.(*protocol.MemoryUser))
+		return true
+	})
+	v.userSize = uint64(len(u))
+	return u
 }
 
 // GetCount get users count
 func (v *Validator) GetCount() int64 {
 	v.Lock()
 	defer v.Unlock()
-	return int64(len(v.users))
+	return int64(v.userSize)
 }
 
 // Get a Shadowsocks user.
 func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	v.RLock()
 	defer v.RUnlock()
-
-	for _, user := range v.users {
-		if account := user.Account.(*MemoryAccount); account.Cipher.IsAEAD() {
-			// AEAD payload decoding requires the payload to be over 32 bytes
-			if len(bs) < 32 {
-				continue
-			}
-
-			aeadCipher := account.Cipher.(*AEADCipher)
-			ivLen = aeadCipher.IVSize()
-			iv := bs[:ivLen]
-			subkey := make([]byte, 32)
-			subkey = subkey[:aeadCipher.KeyBytes]
-			hkdfSHA1(account.Key, iv, subkey)
-			aead = aeadCipher.AEADAuthCreator(subkey)
-
-			var matchErr error
-			switch command {
-			case protocol.RequestCommandTCP:
-				data := make([]byte, 4+aead.NonceSize())
-				ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
-			case protocol.RequestCommandUDP:
-				data := make([]byte, 8192)
-				ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
-			}
-
-			if matchErr == nil {
-				u = user
-				err = account.CheckIV(iv)
-				return
-			}
-		} else {
-			u = user
-			ivLen = user.Account.(*MemoryAccount).Cipher.IVSize()
+	// AEAD payload decoding requires the payload to be over 32 bytes
+	if len(bs) < 32 {
+		v.legacyUsers.Range(func(key, value interface{}) bool {
+			u = value.(*protocol.MemoryUser)
+			ivLen = u.Account.(*MemoryAccount).Cipher.IVSize()
 			// err = user.Account.(*MemoryAccount).CheckIV(bs[:ivLen]) // The IV size of None Cipher is 0.
+			return false
+		})
+		return
+	}
+	iv := bs[:v.ivLen]
+	if v, ok := v.viUsers.Load(iv); ok {
+		user := v.(*protocol.MemoryUser)
+		account := user.Account.(*MemoryAccount)
+		aeadCipher := account.Cipher.(*AEADCipher)
+		subkey := make([]byte, 32)
+		subkey = subkey[:aeadCipher.KeyBytes]
+		hkdfSHA1(account.Key, iv, subkey)
+		aead = aeadCipher.AEADAuthCreator(subkey)
+		var matchErr error
+		switch command {
+		case protocol.RequestCommandTCP:
+			data := make([]byte, 4+aead.NonceSize())
+			ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
+		case protocol.RequestCommandUDP:
+			data := make([]byte, 8192)
+			ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
+		}
+
+		if matchErr == nil {
+			u = user
+			err = account.CheckIV(iv)
 			return
 		}
+		errors.New("数据没找到: " + fmt.Sprintf("%v，%s", iv, user.Email))
 	}
+	v.users.Range(func(key, value interface{}) bool {
+		user := value.(*protocol.MemoryUser)
+		account := user.Account.(*MemoryAccount)
+		aeadCipher := account.Cipher.(*AEADCipher)
+		ivLen = aeadCipher.IVSize()
+		iv = bs[:ivLen]
+		subkey := make([]byte, 32)
+		subkey = subkey[:aeadCipher.KeyBytes]
+		hkdfSHA1(account.Key, iv, subkey)
+		aead = aeadCipher.AEADAuthCreator(subkey)
+		var matchErr error
+		switch command {
+		case protocol.RequestCommandTCP:
+			data := make([]byte, 4+aead.NonceSize())
+			ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
+		case protocol.RequestCommandUDP:
+			data := make([]byte, 8192)
+			ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
+		}
 
+		if matchErr == nil {
+			u = user
+			err = account.CheckIV(iv)
+			v.viUsers.Store(iv, user)
+			return false
+		}
+		return true
+	})
+	if u != nil {
+		return
+	}
 	return nil, nil, nil, 0, ErrNotFound
 }
 
