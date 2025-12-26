@@ -89,18 +89,9 @@ func (v *Validator) GetByEmail(email string) *protocol.MemoryUser {
 func (v *Validator) GetAll() []*protocol.MemoryUser {
 	v.Lock()
 	defer v.Unlock()
-	newDate := time.Now()
 	var u = make([]*protocol.MemoryUser, 0, 100)
 	v.users.Range(func(key, value interface{}) bool {
 		u = append(u, value.(*protocol.MemoryUser))
-		if o, ok := v.onUsers.Load(value.(*protocol.MemoryUser).Email); ok {
-			m := o.(map[string]any)["date"].(time.Time)
-			duration := m.Sub(newDate)
-			if duration > 3*time.Minute {
-				v.onUsers.Delete(value.(*protocol.MemoryUser).Email)
-				fmt.Println("删除不在线账号: " + fmt.Sprintf("%s", value.(*protocol.MemoryUser).Email))
-			}
-		}
 		return true
 	})
 	v.legacyUsers.Range(func(key, value interface{}) bool {
@@ -109,6 +100,22 @@ func (v *Validator) GetAll() []*protocol.MemoryUser {
 	})
 	v.userSize = uint64(len(u))
 	return u
+}
+
+// DetOnUsers 清除不在线用户
+func (v *Validator) DetOnUsers() {
+	v.Lock()
+	defer v.Unlock()
+	newDate := time.Now()
+	v.onUsers.Range(func(key, value interface{}) bool {
+		m := value.(map[string]any)["date"].(time.Time)
+		duration := m.Sub(newDate)
+		if duration > 1*time.Minute {
+			v.onUsers.Delete(value.(*protocol.MemoryUser).Email)
+			fmt.Println("删除不在线账号: " + fmt.Sprintf("%s", value.(*protocol.MemoryUser).Email))
+		}
+		return true
+	})
 }
 
 // GetCount get users count

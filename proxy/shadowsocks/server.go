@@ -14,6 +14,7 @@ import (
 	"github.com/HZ-PRE/XrarCore/common/session"
 	"github.com/HZ-PRE/XrarCore/common/signal"
 	"github.com/HZ-PRE/XrarCore/common/task"
+	. "github.com/HZ-PRE/XrarCore/common/task"
 	"github.com/HZ-PRE/XrarCore/core"
 	"github.com/HZ-PRE/XrarCore/features/policy"
 	"github.com/HZ-PRE/XrarCore/features/routing"
@@ -49,7 +50,14 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		policyManager: v.GetFeature(policy.ManagerType()).(policy.Manager),
 		cone:          ctx.Value("cone").(bool),
 	}
-
+	task := &Periodic{
+		Interval: time.Minute * 1,
+		Execute: func() error {
+			validator.DetOnUsers()
+			return nil
+		},
+	}
+	common.Must(task.Start())
 	return s, nil
 }
 
