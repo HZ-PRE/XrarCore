@@ -125,7 +125,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		return
 	}
 	iv := bs[:v.ivLen]
-	if v, ok := v.viUsers.Load(iv); ok {
+	if v, ok := v.viUsers.Load(fmt.Sprintf("%v", iv)); ok {
 		user := v.(*protocol.MemoryUser)
 		account := user.Account.(*MemoryAccount)
 		aeadCipher := account.Cipher.(*AEADCipher)
@@ -173,7 +173,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		if matchErr == nil {
 			u = user
 			err = account.CheckIV(iv)
-			v.viUsers.Store(iv, user)
+			v.viUsers.Store(fmt.Sprintf("%v", iv), user)
 			return false
 		}
 		return true
