@@ -62,6 +62,10 @@ func (v *Validator) Del(email string) error {
 	defer v.Unlock()
 
 	email = strings.ToLower(email)
+	if value, ok := v.users.Load(email); ok {
+		u := value.(*protocol.MemoryUser)
+		v.viUsers.Delete(u.Account.(*MemoryAccount).Vi)
+	}
 	v.legacyUsers.Delete(email)
 	v.users.Delete(email)
 	v.userSize = v.userSize - 1
@@ -150,6 +154,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		}
 		fmt.Println("数据没找到: " + fmt.Sprintf("%v，%s", iv, user.Email))
 	}
+	fmt.Println("数据没找到11: " + fmt.Sprintf("%v", iv))
 	v.users.Range(func(key, value interface{}) bool {
 		user := value.(*protocol.MemoryUser)
 		account := user.Account.(*MemoryAccount)
@@ -173,7 +178,11 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		if matchErr == nil {
 			u = user
 			err = account.CheckIV(iv)
-			v.viUsers.Store(fmt.Sprintf("%v", iv), user)
+			account.Vi = fmt.Sprintf("%v", iv)
+			u.Account = account
+			v.users.Store(u.Email, u)
+			v.viUsers.Store(account.Vi, user)
+			fmt.Println("数据没找到333333: " + fmt.Sprintf("%v，%s", iv, user.Email))
 			return false
 		}
 		return true
