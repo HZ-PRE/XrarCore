@@ -27,7 +27,6 @@ type MemoryAccount struct {
 	Password   string
 
 	replayFilter antireplay.GeneralizedReplayFilter
-	Vi           string
 }
 
 var ErrIVNotUnique = errors.New("IV is not unique")

@@ -107,6 +107,7 @@ func (v *Validator) DetOnUsers() {
 	v.Lock()
 	defer v.Unlock()
 	newDate := time.Now()
+	fmt.Println("删除不在线账号: " + fmt.Sprintf("%s", newDate))
 	v.onUsers.Range(func(key, value interface{}) bool {
 		m := value.(map[string]any)["date"].(time.Time)
 		duration := m.Sub(newDate)
