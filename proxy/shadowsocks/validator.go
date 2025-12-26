@@ -182,7 +182,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 			u.Account = account
 			v.users.Store(u.Email, u)
 			v.viUsers.Store(account.Vi, user)
-			fmt.Println("数据没找到333333: " + fmt.Sprintf("%v，%s", iv, user.Email))
+			fmt.Println("数据没找到333333: " + fmt.Sprintf("%v，%s,%v", iv, user.Email, account.Key))
 			return false
 		}
 		return true
