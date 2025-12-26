@@ -111,7 +111,7 @@ func (v *Validator) DetOnUsers() {
 	v.onUsers.Range(func(key, value interface{}) bool {
 		fmt.Println("删除不在线账号key: " + fmt.Sprintf("%s", key))
 		m := value.(map[string]any)["date"].(time.Time)
-		duration := m.Sub(newDate)
+		duration := newDate.Sub(m)
 		fmt.Println("删除不在线账号duration: " + fmt.Sprintf("%s，ssss：%d,ssss：%d", m, duration, duration > 1*time.Minute))
 		if duration > 1*time.Minute {
 			v.onUsers.Delete(value.(*protocol.MemoryUser).Email)
