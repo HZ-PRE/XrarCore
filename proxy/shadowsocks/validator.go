@@ -61,6 +61,7 @@ func (v *Validator) Del(email string) error {
 
 	email = strings.ToLower(email)
 	v.onUsers.Delete(email)
+	v.onDayUsers.Delete(email)
 	v.legacyUsers.Delete(email)
 	v.users.Delete(email)
 	v.userSize = v.userSize - 1
@@ -119,7 +120,7 @@ func (v *Validator) DetOnUsers() {
 		m := value.(map[string]any)["date"].(time.Time)
 		duration := newDate.Sub(m)
 		if duration > 24*time.Hour {
-			v.onUsers.Delete(value.(map[string]any)["u"].(*protocol.MemoryUser).Email)
+			v.onDayUsers.Delete(value.(map[string]any)["u"].(*protocol.MemoryUser).Email)
 		}
 		return true
 	})
