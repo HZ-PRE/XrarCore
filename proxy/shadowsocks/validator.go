@@ -4,7 +4,6 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
-	"fmt"
 	"hash/crc64"
 	"strings"
 	"sync"
@@ -22,6 +21,7 @@ type Validator struct {
 	legacyUsers   sync.Map
 	userSize      uint64
 	onUsers       sync.Map
+	onDayUsers    sync.Map
 	behaviorSeed  uint64
 	behaviorFused bool
 }
@@ -110,8 +110,15 @@ func (v *Validator) DetOnUsers() {
 	v.onUsers.Range(func(key, value interface{}) bool {
 		m := value.(map[string]any)["date"].(time.Time)
 		duration := newDate.Sub(m)
-		if duration > 1*time.Minute {
-			fmt.Println("清除不在线用户true")
+		if duration > 10*time.Minute {
+			v.onUsers.Delete(value.(map[string]any)["u"].(*protocol.MemoryUser).Email)
+		}
+		return true
+	})
+	v.onDayUsers.Range(func(key, value interface{}) bool {
+		m := value.(map[string]any)["date"].(time.Time)
+		duration := newDate.Sub(m)
+		if duration > 24*time.Hour {
 			v.onUsers.Delete(value.(map[string]any)["u"].(*protocol.MemoryUser).Email)
 		}
 		return true
@@ -155,6 +162,21 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 	if u != nil {
 		return
 	}
+	v.onDayUsers.Range(func(key, value interface{}) bool {
+		user := value.(map[string]any)["u"].(*protocol.MemoryUser)
+		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, user, command)
+		if u == nil {
+			return true
+		}
+		v.onUsers.Store(u.Email, map[string]any{
+			"date": newDate,
+			"u":    u,
+		})
+		return false
+	})
+	if u != nil {
+		return
+	}
 	v.users.Range(func(key, value interface{}) bool {
 		user := value.(*protocol.MemoryUser)
 		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, user, command)
@@ -162,6 +184,10 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 			return true
 		}
 		v.onUsers.Store(u.Email, map[string]any{
+			"date": newDate,
+			"u":    u,
+		})
+		v.onDayUsers.Store(u.Email, map[string]any{
 			"date": newDate,
 			"u":    u,
 		})

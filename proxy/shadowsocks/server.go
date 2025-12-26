@@ -51,7 +51,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		cone:          ctx.Value("cone").(bool),
 	}
 	task := &Periodic{
-		Interval: time.Minute * 1,
+		Interval: time.Minute * 5,
 		Execute: func() error {
 			validator.DetOnUsers()
 			return nil
