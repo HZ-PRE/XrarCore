@@ -1,7 +1,6 @@
 package shadowsocks
 
 import (
-	"context"
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -149,7 +148,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 			err = account.CheckIV(iv)
 			return
 		}
-		errors.LogError(context.Background(), "数据没找到: "+fmt.Sprintf("%v，%s", iv, user.Email))
+		fmt.Println("数据没找到: " + fmt.Sprintf("%v，%s", iv, user.Email))
 	}
 	v.users.Range(func(key, value interface{}) bool {
 		user := value.(*protocol.MemoryUser)
