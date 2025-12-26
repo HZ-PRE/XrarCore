@@ -2,7 +2,6 @@ package shadowsocks
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/HZ-PRE/XrarCore/common"
@@ -51,11 +50,9 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		policyManager: v.GetFeature(policy.ManagerType()).(policy.Manager),
 		cone:          ctx.Value("cone").(bool),
 	}
-	fmt.Println("删除不在线账号ss")
 	task := &Periodic{
 		Interval: time.Minute * 1,
 		Execute: func() error {
-			fmt.Println("删除不在线账号DetOnUsers")
 			validator.DetOnUsers()
 			return nil
 		},

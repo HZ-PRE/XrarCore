@@ -107,15 +107,12 @@ func (v *Validator) DetOnUsers() {
 	v.Lock()
 	defer v.Unlock()
 	newDate := time.Now()
-	fmt.Println("删除不在线账号: " + fmt.Sprintf("%s", newDate))
 	v.onUsers.Range(func(key, value interface{}) bool {
-		fmt.Println("删除不在线账号key: " + fmt.Sprintf("%s", key))
 		m := value.(map[string]any)["date"].(time.Time)
 		duration := newDate.Sub(m)
-		fmt.Println("删除不在线账号duration: " + fmt.Sprintf("%s，ssss：%d,ssss：%d", m, duration, duration > 1*time.Minute))
 		if duration > 1*time.Minute {
-			v.onUsers.Delete(value.(*protocol.MemoryUser).Email)
-			fmt.Println("删除不在线账号: " + fmt.Sprintf("%s", value.(*protocol.MemoryUser).Email))
+			fmt.Println("清除不在线用户true")
+			v.onUsers.Delete(value.(map[string]any)["u"].(*protocol.MemoryUser).Email)
 		}
 		return true
 	})
@@ -142,6 +139,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		})
 		return
 	}
+	newDate := time.Now()
 	v.onUsers.Range(func(key, value interface{}) bool {
 		user := value.(map[string]any)["u"].(*protocol.MemoryUser)
 		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, user, command)
@@ -149,7 +147,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 			return true
 		}
 		v.onUsers.Store(u.Email, map[string]any{
-			"date": time.Now(),
+			"date": newDate,
 			"u":    u,
 		})
 		return false
@@ -164,7 +162,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 			return true
 		}
 		v.onUsers.Store(u.Email, map[string]any{
-			"date": time.Now(),
+			"date": newDate,
 			"u":    u,
 		})
 		return false
