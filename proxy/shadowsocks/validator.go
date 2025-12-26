@@ -8,6 +8,7 @@ import (
 	"hash/crc64"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/HZ-PRE/XrarCore/common/dice"
 	"github.com/HZ-PRE/XrarCore/common/errors"
@@ -20,8 +21,7 @@ type Validator struct {
 	users         sync.Map
 	legacyUsers   sync.Map
 	userSize      uint64
-	viUsers       sync.Map
-	ivLen         int32
+	onUsers       sync.Map
 	behaviorSeed  uint64
 	behaviorFused bool
 }
@@ -41,8 +41,6 @@ func (v *Validator) Add(u *protocol.MemoryUser) error {
 		return nil
 	}
 	v.users.Store(u.Email, u)
-	aeadCipher := account.Cipher.(*AEADCipher)
-	v.ivLen = aeadCipher.IVSize()
 	if !v.behaviorFused {
 		hashkdf := hmac.New(sha256.New, []byte("SSBSKDF"))
 		hashkdf.Write(account.Key)
@@ -62,10 +60,7 @@ func (v *Validator) Del(email string) error {
 	defer v.Unlock()
 
 	email = strings.ToLower(email)
-	if value, ok := v.users.Load(email); ok {
-		u := value.(*protocol.MemoryUser)
-		v.viUsers.Delete(u.Account.(*MemoryAccount).Vi)
-	}
+	v.onUsers.Delete(email)
 	v.legacyUsers.Delete(email)
 	v.users.Delete(email)
 	v.userSize = v.userSize - 1
@@ -94,9 +89,18 @@ func (v *Validator) GetByEmail(email string) *protocol.MemoryUser {
 func (v *Validator) GetAll() []*protocol.MemoryUser {
 	v.Lock()
 	defer v.Unlock()
+	newDate := time.Now()
 	var u = make([]*protocol.MemoryUser, 0, 100)
 	v.users.Range(func(key, value interface{}) bool {
 		u = append(u, value.(*protocol.MemoryUser))
+		if o, ok := v.onUsers.Load(value.(*protocol.MemoryUser).Email); ok {
+			m := o.(map[string]any)["date"].(time.Time)
+			duration := m.Sub(newDate)
+			if duration > 3*time.Minute {
+				v.onUsers.Delete(value.(*protocol.MemoryUser).Email)
+				fmt.Println("删除不在线账号: " + fmt.Sprintf("%s", value.(*protocol.MemoryUser).Email))
+			}
+		}
 		return true
 	})
 	v.legacyUsers.Range(func(key, value interface{}) bool {
@@ -128,64 +132,24 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		})
 		return
 	}
-	iv := bs[:v.ivLen]
-	if v, ok := v.viUsers.Load(fmt.Sprintf("%v", iv)); ok {
-		user := v.(*protocol.MemoryUser)
-		account := user.Account.(*MemoryAccount)
-		aeadCipher := account.Cipher.(*AEADCipher)
-		subkey := make([]byte, 32)
-		subkey = subkey[:aeadCipher.KeyBytes]
-		hkdfSHA1(account.Key, iv, subkey)
-		aead = aeadCipher.AEADAuthCreator(subkey)
-		var matchErr error
-		switch command {
-		case protocol.RequestCommandTCP:
-			data := make([]byte, 4+aead.NonceSize())
-			ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
-		case protocol.RequestCommandUDP:
-			data := make([]byte, 8192)
-			ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
+	v.onUsers.Range(func(key, value interface{}) bool {
+		user := value.(map[string]any)["u"].(*protocol.MemoryUser)
+		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, user, &v.onUsers, command)
+		if u == nil {
+			return true
 		}
-
-		if matchErr == nil {
-			u = user
-			err = account.CheckIV(iv)
-			return
-		}
-		fmt.Println("数据没找到: " + fmt.Sprintf("%v，%s", iv, user.Email))
+		return false
+	})
+	if u != nil {
+		return
 	}
-	fmt.Println("数据没找到11: " + fmt.Sprintf("%v", iv))
 	v.users.Range(func(key, value interface{}) bool {
 		user := value.(*protocol.MemoryUser)
-		account := user.Account.(*MemoryAccount)
-		aeadCipher := account.Cipher.(*AEADCipher)
-		ivLen = aeadCipher.IVSize()
-		iv = bs[:ivLen]
-		subkey := make([]byte, 32)
-		subkey = subkey[:aeadCipher.KeyBytes]
-		hkdfSHA1(account.Key, iv, subkey)
-		aead = aeadCipher.AEADAuthCreator(subkey)
-		var matchErr error
-		switch command {
-		case protocol.RequestCommandTCP:
-			data := make([]byte, 4+aead.NonceSize())
-			ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
-		case protocol.RequestCommandUDP:
-			data := make([]byte, 8192)
-			ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
+		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, user, &v.onUsers, command)
+		if u == nil {
+			return true
 		}
-
-		if matchErr == nil {
-			u = user
-			err = account.CheckIV(iv)
-			account.Vi = fmt.Sprintf("%v", iv)
-			u.Account = account
-			v.users.Store(u.Email, u)
-			v.viUsers.Store(account.Vi, user)
-			fmt.Println("数据没找到333333: " + fmt.Sprintf("%v，%s,%v", iv, user.Email, account.Key))
-			return false
-		}
-		return true
+		return false
 	})
 	if u != nil {
 		return
@@ -202,4 +166,35 @@ func (v *Validator) GetBehaviorSeed() uint64 {
 		v.behaviorSeed = dice.RollUint64()
 	}
 	return v.behaviorSeed
+}
+
+func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, onUsers *sync.Map, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
+	account := user.Account.(*MemoryAccount)
+	aeadCipher := account.Cipher.(*AEADCipher)
+	ivLen = aeadCipher.IVSize()
+	iv := bs[:ivLen]
+	subkey := make([]byte, 32)
+	subkey = subkey[:aeadCipher.KeyBytes]
+	hkdfSHA1(account.Key, iv, subkey)
+	aead = aeadCipher.AEADAuthCreator(subkey)
+	var matchErr error
+	switch command {
+	case protocol.RequestCommandTCP:
+		data := make([]byte, 4+aead.NonceSize())
+		ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
+	case protocol.RequestCommandUDP:
+		data := make([]byte, 8192)
+		ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
+	}
+
+	if matchErr == nil {
+		u = user
+		err = account.CheckIV(iv)
+		onUsers.Store(u.Email, map[string]any{
+			"date": time.Now(),
+			"u":    u,
+		})
+		return
+	}
+	return nil, nil, nil, 0, matchErr
 }
