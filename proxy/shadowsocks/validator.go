@@ -22,6 +22,7 @@ type Validator struct {
 	userSize      uint64
 	onUsers       sync.Map
 	onDayUsers    sync.Map
+	onHourUsers   sync.Map
 	behaviorSeed  uint64
 	behaviorFused bool
 }
@@ -61,6 +62,7 @@ func (v *Validator) Del(email string) error {
 
 	email = strings.ToLower(email)
 	v.onUsers.Delete(email)
+	v.onHourUsers.Delete(email)
 	v.onDayUsers.Delete(email)
 	v.legacyUsers.Delete(email)
 	v.users.Delete(email)
@@ -109,18 +111,26 @@ func (v *Validator) DetOnUsers() {
 	defer v.Unlock()
 	newDate := time.Now()
 	v.onUsers.Range(func(key, value interface{}) bool {
-		m := value.(map[string]any)["date"].(time.Time)
+		m := value.(time.Time)
 		duration := newDate.Sub(m)
 		if duration > 10*time.Minute {
-			v.onUsers.Delete(value.(map[string]any)["u"].(*protocol.MemoryUser).Email)
+			v.onUsers.Delete(key)
+		}
+		return true
+	})
+	v.onHourUsers.Range(func(key, value interface{}) bool {
+		m := value.(time.Time)
+		duration := newDate.Sub(m)
+		if duration > 6*time.Hour {
+			v.onHourUsers.Delete(key)
 		}
 		return true
 	})
 	v.onDayUsers.Range(func(key, value interface{}) bool {
-		m := value.(map[string]any)["date"].(time.Time)
+		m := value.(time.Time)
 		duration := newDate.Sub(m)
 		if duration > 24*time.Hour {
-			v.onDayUsers.Delete(value.(map[string]any)["u"].(*protocol.MemoryUser).Email)
+			v.onDayUsers.Delete(key)
 		}
 		return true
 	})
@@ -149,31 +159,50 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 	}
 	newDate := time.Now()
 	v.onUsers.Range(func(key, value interface{}) bool {
-		user := value.(map[string]any)["u"].(*protocol.MemoryUser)
-		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, user, command)
-		if u == nil {
-			return true
+		if user, ok := v.users.Load(key); ok {
+			u1 := user.(*protocol.MemoryUser)
+			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+			if u == nil {
+				return true
+			}
+			v.onUsers.Store(u.Email, newDate)
+			return false
 		}
-		v.onUsers.Store(u.Email, map[string]any{
-			"date": newDate,
-			"u":    u,
-		})
-		return false
+		return true
+
+	})
+	if u != nil {
+		return
+	}
+	v.onHourUsers.Range(func(key, value interface{}) bool {
+		if user, ok := v.users.Load(key); ok {
+			u1 := user.(*protocol.MemoryUser)
+			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+			if u == nil {
+				return true
+			}
+			v.onUsers.Store(u.Email, newDate)
+			v.onHourUsers.Store(u.Email, newDate)
+			return false
+		}
+		return true
 	})
 	if u != nil {
 		return
 	}
 	v.onDayUsers.Range(func(key, value interface{}) bool {
-		user := value.(map[string]any)["u"].(*protocol.MemoryUser)
-		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, user, command)
-		if u == nil {
-			return true
+		if user, ok := v.users.Load(key); ok {
+			u1 := user.(*protocol.MemoryUser)
+			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+			if u == nil {
+				return true
+			}
+			v.onUsers.Store(u.Email, newDate)
+			v.onHourUsers.Store(u.Email, newDate)
+			v.onDayUsers.Store(u.Email, newDate)
+			return false
 		}
-		v.onUsers.Store(u.Email, map[string]any{
-			"date": newDate,
-			"u":    u,
-		})
-		return false
+		return true
 	})
 	if u != nil {
 		return
@@ -184,14 +213,9 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		if u == nil {
 			return true
 		}
-		v.onUsers.Store(u.Email, map[string]any{
-			"date": newDate,
-			"u":    u,
-		})
-		v.onDayUsers.Store(u.Email, map[string]any{
-			"date": newDate,
-			"u":    u,
-		})
+		v.onUsers.Store(u.Email, newDate)
+		v.onHourUsers.Store(u.Email, newDate)
+		v.onDayUsers.Store(u.Email, newDate)
 		return false
 	})
 	if u != nil {
