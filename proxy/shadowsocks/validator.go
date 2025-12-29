@@ -1,6 +1,7 @@
 package shadowsocks
 
 import (
+	"context"
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -17,14 +18,24 @@ import (
 // Validator stores valid Shadowsocks users.
 type Validator struct {
 	sync.RWMutex
-	users         sync.Map
-	legacyUsers   sync.Map
-	userSize      uint64
-	onUsers       sync.Map
-	onDayUsers    sync.Map
-	onHourUsers   sync.Map
-	behaviorSeed  uint64
-	behaviorFused bool
+	users          sync.Map
+	userSize       int
+	legacyUsers    sync.Map
+	onUsers        sync.Map
+	onUserSize     int
+	onDayUsers     sync.Map
+	onDayUserSize  int
+	onHourUsers    sync.Map
+	onHourUserSize int
+	behaviorSeed   uint64
+	behaviorFused  bool
+}
+type batchResult struct {
+	u     *protocol.MemoryUser
+	aead  cipher.AEAD
+	ret   []byte
+	ivLen int32
+	err   error
 }
 
 var ErrNotFound = errors.New("Not Found")
@@ -56,11 +67,13 @@ func (v *Validator) Del(email string) error {
 	if email == "" {
 		return errors.New("Email must not be empty.")
 	}
-
 	v.Lock()
 	defer v.Unlock()
 
 	email = strings.ToLower(email)
+	if _, ok := v.users.Load(email); !ok {
+		return nil
+	}
 	v.onUsers.Delete(email)
 	v.onHourUsers.Delete(email)
 	v.onDayUsers.Delete(email)
@@ -101,7 +114,7 @@ func (v *Validator) GetAll() []*protocol.MemoryUser {
 		u = append(u, value.(*protocol.MemoryUser))
 		return true
 	})
-	v.userSize = uint64(len(u))
+	v.userSize = len(u)
 	return u
 }
 
@@ -110,30 +123,42 @@ func (v *Validator) DetOnUsers() {
 	v.Lock()
 	defer v.Unlock()
 	newDate := time.Now()
+	onUserSize := 0
 	v.onUsers.Range(func(key, value interface{}) bool {
 		m := value.(time.Time)
 		duration := newDate.Sub(m)
-		if duration > 10*time.Minute {
+		if duration > 11*time.Minute {
 			v.onUsers.Delete(key)
+		} else {
+			onUserSize += 1
 		}
 		return true
 	})
+	onHourUserSize := 0
 	v.onHourUsers.Range(func(key, value interface{}) bool {
 		m := value.(time.Time)
 		duration := newDate.Sub(m)
 		if duration > 6*time.Hour {
 			v.onHourUsers.Delete(key)
+		} else {
+			onHourUserSize += 1
 		}
 		return true
 	})
+	onDayUserSize := 0
 	v.onDayUsers.Range(func(key, value interface{}) bool {
 		m := value.(time.Time)
 		duration := newDate.Sub(m)
 		if duration > 24*time.Hour {
 			v.onDayUsers.Delete(key)
+		} else {
+			onDayUserSize += 1
 		}
 		return true
 	})
+	v.onUserSize = onUserSize
+	v.onHourUserSize = onHourUserSize
+	v.onDayUserSize = onDayUserSize
 }
 
 // GetCount get users count
@@ -158,70 +183,173 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		return
 	}
 	newDate := time.Now()
-	v.onUsers.Range(func(key, value interface{}) bool {
-		if user, ok := v.users.Load(key); ok {
-			u1 := user.(*protocol.MemoryUser)
-			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-			if u == nil {
-				return true
+	if v.onUserSize < 2000 {
+		v.onUsers.Range(func(key, value interface{}) bool {
+			if user, ok := v.users.Load(key); ok {
+				u1 := user.(*protocol.MemoryUser)
+				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+				if u == nil {
+					return true
+				}
+				v.onUsers.Store(u.Email, newDate)
+				return false
 			}
-			v.onUsers.Store(u.Email, newDate)
-			return false
-		}
-		return true
+			return true
 
-	})
-	if u != nil {
-		return
+		})
+		if u != nil {
+			return
+		}
+	} else {
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.users, &v.onUsers, bs, command, 2000)
+		if u != nil {
+			v.onUsers.Store(u.Email, newDate)
+			return
+		}
 	}
-	v.onHourUsers.Range(func(key, value interface{}) bool {
-		if user, ok := v.users.Load(key); ok {
-			u1 := user.(*protocol.MemoryUser)
-			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-			if u == nil {
-				return true
+	if v.onHourUserSize < 4000 {
+		v.onHourUsers.Range(func(key, value interface{}) bool {
+			if user, ok := v.users.Load(key); ok {
+				u1 := user.(*protocol.MemoryUser)
+				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+				if u == nil {
+					return true
+				}
+				v.onUsers.Store(u.Email, newDate)
+				v.onHourUsers.Store(u.Email, newDate)
+				return false
 			}
+			return true
+
+		})
+		if u != nil {
+			return
+		}
+	} else {
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.users, &v.onHourUsers, bs, command, 4000)
+		if u != nil {
 			v.onUsers.Store(u.Email, newDate)
 			v.onHourUsers.Store(u.Email, newDate)
-			return false
+			return
 		}
-		return true
-	})
-	if u != nil {
-		return
 	}
-	v.onDayUsers.Range(func(key, value interface{}) bool {
-		if user, ok := v.users.Load(key); ok {
-			u1 := user.(*protocol.MemoryUser)
-			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-			if u == nil {
-				return true
+	if v.onDayUserSize < 5000 {
+		v.onDayUsers.Range(func(key, value interface{}) bool {
+			if user, ok := v.users.Load(key); ok {
+				u1 := user.(*protocol.MemoryUser)
+				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+				if u == nil {
+					return true
+				}
+				v.onUsers.Store(u.Email, newDate)
+				v.onHourUsers.Store(u.Email, newDate)
+				v.onDayUsers.Store(u.Email, newDate)
+				return false
 			}
+			return true
+
+		})
+		if u != nil {
+			return
+		}
+	} else {
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.users, &v.onDayUsers, bs, command, 5000)
+		if u != nil {
 			v.onUsers.Store(u.Email, newDate)
 			v.onHourUsers.Store(u.Email, newDate)
 			v.onDayUsers.Store(u.Email, newDate)
-			return false
+			return
 		}
-		return true
-	})
-	if u != nil {
-		return
 	}
-	v.users.Range(func(key, value interface{}) bool {
-		user := value.(*protocol.MemoryUser)
-		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, user, command)
-		if u == nil {
-			return true
-		}
+
+	u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, bs, command, 5000)
+	if u != nil {
 		v.onUsers.Store(u.Email, newDate)
 		v.onHourUsers.Store(u.Email, newDate)
 		v.onDayUsers.Store(u.Email, newDate)
-		return false
-	})
-	if u != nil {
 		return
 	}
 	return nil, nil, nil, 0, ErrNotFound
+}
+
+// 使用并行处理的批量函数
+func processUsersInBatchesParallel(userList *sync.Map, users *sync.Map, bs []byte, command protocol.RequestCommand, batchSize uint64) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
+	userBatch := make([]*protocol.MemoryUser, 0, int(batchSize))
+	var wg sync.WaitGroup
+
+	ret1 := make(chan *batchResult, 1)
+	// 创建一个可取消的上下文
+	ctx, cancel := context.WithCancel(context.Background())
+
+	users.Range(func(key, value interface{}) bool {
+		var user *protocol.MemoryUser
+		if userList != nil {
+			if u1, ok := userList.Load(key); ok {
+				user = u1.(*protocol.MemoryUser)
+			}
+		} else {
+			user = value.(*protocol.MemoryUser)
+		}
+		userBatch = append(userBatch, user)
+
+		// 当批次达到指定大小时，启动一个 goroutine 来处理该批次
+		if len(userBatch) >= int(batchSize) {
+			wg.Add(1)
+			go userProcessBatch(userBatch, &wg, bs, command, cancel, ret1)
+			userBatch = userBatch[:0] // 清空当前批次
+		}
+
+		// 如果 ctx 已取消，退出 Range 遍历
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+			return true
+		}
+	})
+
+	// 如果最后有剩余的用户（未满批次），并行处理
+	if len(userBatch) > 0 {
+		wg.Add(1)
+		go userProcessBatch(userBatch, &wg, bs, command, cancel, ret1)
+	}
+
+	// 等待所有 goroutine 完成
+	wg.Wait()
+	r1 := <-ret1
+	if r1.u != nil {
+		u = r1.u
+		aead = r1.aead
+		ret = r1.ret
+		ivLen = r1.ivLen
+		err = r1.err
+	}
+	return
+}
+
+// 处理批次的函数
+func userProcessBatch(batch []*protocol.MemoryUser, wg *sync.WaitGroup, bs []byte, command protocol.RequestCommand, cancel context.CancelFunc, ret chan<- *batchResult) {
+	defer wg.Done()
+	for _, user := range batch {
+		// 如果上下文已经被取消，退出循环
+		select {
+		case <-context.Background().Done():
+			return // 上下文已取消，退出
+		default:
+			u, aead, retData, ivLen, err := checkAEADAndMatch(bs, user, command)
+			if u != nil {
+				ret <- &batchResult{
+					u:     u,
+					aead:  aead,
+					ret:   retData,
+					ivLen: ivLen,
+					err:   err,
+				}
+				cancel() // 取消所有并行任务
+				return
+			}
+		}
+	}
 }
 
 func (v *Validator) GetBehaviorSeed() uint64 {
