@@ -402,16 +402,13 @@ func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.Re
 	hkdfSHA1(account.Key, iv, subkey)
 	aead = aeadCipher.AEADAuthCreator(subkey)
 	var matchErr error
-	var dataPtr *[]byte
+	var dataPtr = dataPool.Get().(*[]byte)
+	defer dataPool.Put(dataPtr)
 	switch command {
 	case protocol.RequestCommandTCP:
-		dataPtr = dataPool.Get().(*[]byte)
-		defer dataPool.Put(dataPtr)
 		data := (*dataPtr)[:4+aead.NonceSize()]
 		ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
 	case protocol.RequestCommandUDP:
-		dataPtr = dataPool.Get().(*[]byte)
-		defer dataPool.Put(dataPtr)
 		data := (*dataPtr)[:8192]
 		ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
 	}
