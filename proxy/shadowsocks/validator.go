@@ -5,7 +5,6 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/binary"
 	"hash/crc64"
 	"runtime"
 	"strings"
@@ -70,8 +69,6 @@ func (v *Validator) Add(u *protocol.MemoryUser) error {
 		v.legacyUsers.Store(email, u)
 		return nil
 	}
-	account.initAccountKey()
-	u.Account = account
 	v.users.Store(u.Email, u)
 	if !v.behaviorFused {
 		hashkdf := hmac.New(sha256.New, []byte("SSBSKDF"))
@@ -398,11 +395,6 @@ func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.Re
 		return
 	}
 	iv := bs[:ivLen]
-
-	ivTag := binary.LittleEndian.Uint64(iv[:8])
-	if (ivTag ^ account.KeyFP) != account.Expect {
-		return // 直接失败，不进 AEAD
-	}
 	ptr := subkeyPool.Get().(*[]byte)
 	defer subkeyPool.Put(ptr)
 	subkey := *ptr
