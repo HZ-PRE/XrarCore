@@ -5,8 +5,9 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
-	"fmt"
+	"encoding/binary"
 	"hash/crc64"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,22 @@ type batchResult struct {
 	err   error
 }
 
+var (
+	subkeyPool = sync.Pool{
+		New: func() any {
+			b := make([]byte, 32)
+			return &b
+		},
+	}
+
+	dataPool = sync.Pool{
+		New: func() any {
+			b := make([]byte, 8192) // 用于 UDP 的较大缓冲区
+			return &b
+		},
+	}
+)
+
 var ErrNotFound = errors.New("Not Found")
 
 // Add a Shadowsocks user.
@@ -53,6 +70,8 @@ func (v *Validator) Add(u *protocol.MemoryUser) error {
 		v.legacyUsers.Store(email, u)
 		return nil
 	}
+	account.initAccountKey()
+	u.Account = account
 	v.users.Store(u.Email, u)
 	if !v.behaviorFused {
 		hashkdf := hmac.New(sha256.New, []byte("SSBSKDF"))
@@ -89,9 +108,6 @@ func (v *Validator) GetByEmail(email string) *protocol.MemoryUser {
 	if email == "" {
 		return nil
 	}
-
-	v.Lock()
-	defer v.Unlock()
 	email = strings.ToLower(email)
 	if value, ok := v.legacyUsers.Load(email); ok {
 		return value.(*protocol.MemoryUser)
@@ -104,8 +120,6 @@ func (v *Validator) GetByEmail(email string) *protocol.MemoryUser {
 
 // GetAll get all users
 func (v *Validator) GetAll() []*protocol.MemoryUser {
-	v.Lock()
-	defer v.Unlock()
 	var u = make([]*protocol.MemoryUser, 0, 2000)
 	v.users.Range(func(key, value interface{}) bool {
 		u = append(u, value.(*protocol.MemoryUser))
@@ -123,7 +137,6 @@ func (v *Validator) GetAll() []*protocol.MemoryUser {
 func (v *Validator) DetOnUsers() {
 	v.Lock()
 	defer v.Unlock()
-	fmt.Println("清除不在线用户")
 	newDate := time.Now()
 	onUserSize := 0
 	onHourUserSize := 0
@@ -163,8 +176,6 @@ func (v *Validator) DetOnUsers() {
 
 // GetCount get users count
 func (v *Validator) GetCount() int64 {
-	v.Lock()
-	defer v.Unlock()
 	return int64(v.userSize)
 }
 
@@ -182,104 +193,123 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		})
 		return
 	}
-	newDate := time.Now()
-	v.onUsers.Range(func(key, value interface{}) bool {
-		if user, ok := v.users.Load(key); ok {
-			u1 := user.(*protocol.MemoryUser)
-			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-			if u == nil {
-				return true
+	if v.onUserSize < 3000 {
+		v.onUsers.Range(func(key, value interface{}) bool {
+			if user, ok := v.users.Load(key); ok {
+				u1 := user.(*protocol.MemoryUser)
+				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+				if u == nil {
+					return true
+				}
+				v.touchUser(u.Email)
+				return false
 			}
-			return false
-		}
-		return true
-	})
-	if u != nil {
-		v.onUsers.Store(u.Email, newDate)
-		v.onHourUsers.Store(u.Email, newDate)
-		v.onDayUsers.Store(u.Email, newDate)
-		return
-	}
-	v.onHourUsers.Range(func(key, value interface{}) bool {
-		if user, ok := v.users.Load(key); ok {
-			u1 := user.(*protocol.MemoryUser)
-			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-			if u == nil {
-				return true
-			}
-			return false
-		}
-		return true
-	})
-	if u != nil {
-		v.onUsers.Store(u.Email, newDate)
-		v.onHourUsers.Store(u.Email, newDate)
-		v.onDayUsers.Store(u.Email, newDate)
-		return
-	}
-	v.onDayUsers.Range(func(key, value interface{}) bool {
-		if user, ok := v.users.Load(key); ok {
-			u1 := user.(*protocol.MemoryUser)
-			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-			if u == nil {
-				return true
-			}
-			return false
-		}
-		return true
-
-	})
-	if u != nil {
-		v.onUsers.Store(u.Email, newDate)
-		v.onHourUsers.Store(u.Email, newDate)
-		v.onDayUsers.Store(u.Email, newDate)
-		return
-	}
-	v.users.Range(func(key, value interface{}) bool {
-		u1 := value.(*protocol.MemoryUser)
-		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-		if u == nil {
 			return true
+
+		})
+		if u != nil {
+			return
 		}
-		return false
-	})
+	} else {
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.users, &v.onUsers, bs, command, 3000)
+		if u != nil {
+			v.touchUser(u.Email)
+			return
+		}
+	}
+	if v.onHourUserSize < 5000 {
+		v.onHourUsers.Range(func(key, value interface{}) bool {
+			if user, ok := v.users.Load(key); ok {
+				u1 := user.(*protocol.MemoryUser)
+				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+				if u == nil {
+					return true
+				}
+				v.touchUser(u.Email)
+				return false
+			}
+			return true
+
+		})
+		if u != nil {
+			return
+		}
+	} else {
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.users, &v.onHourUsers, bs, command, 5000)
+		if u != nil {
+			v.touchUser(u.Email)
+			return
+		}
+	}
+	if v.onDayUserSize < 7000 {
+		v.onDayUsers.Range(func(key, value interface{}) bool {
+			if user, ok := v.users.Load(key); ok {
+				u1 := user.(*protocol.MemoryUser)
+				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+				if u == nil {
+					return true
+				}
+				v.touchUser(u.Email)
+				return false
+			}
+			return true
+
+		})
+		if u != nil {
+			return
+		}
+	} else {
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.users, &v.onDayUsers, bs, command, 7000)
+		if u != nil {
+			v.touchUser(u.Email)
+			return
+		}
+	}
+
+	u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, bs, command, 14000)
 	if u != nil {
-		v.onUsers.Store(u.Email, newDate)
-		v.onHourUsers.Store(u.Email, newDate)
-		v.onDayUsers.Store(u.Email, newDate)
+		v.touchUser(u.Email)
 		return
 	}
 	return nil, nil, nil, 0, ErrNotFound
 }
 
 // 使用并行处理的批量函数
-func processUsersInBatchesParallel(userList *sync.Map, users *sync.Map, bs []byte, command protocol.RequestCommand, batchSize uint64) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
-	userBatch := make([]*protocol.MemoryUser, 0, int(batchSize))
-	var wg sync.WaitGroup
-
-	ret1 := make(chan *batchResult, 1)
-	// 创建一个可取消的上下文
+func processUsersInBatchesParallel(userList *sync.Map, users *sync.Map, bs []byte, command protocol.RequestCommand, batchSize int) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	users.Range(func(key, value interface{}) bool {
+	var wg sync.WaitGroup
+	result := make(chan *batchResult, 1)
+
+	batch := make([]*protocol.MemoryUser, 0, batchSize)
+	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
+	users.Range(func(key, value any) bool {
 		var user *protocol.MemoryUser
+
 		if userList != nil {
-			if u1, ok := userList.Load(key); ok {
-				user = u1.(*protocol.MemoryUser)
+			if v, ok := userList.Load(key); ok {
+				user = v.(*protocol.MemoryUser)
+			} else {
+				return true
 			}
 		} else {
 			user = value.(*protocol.MemoryUser)
 		}
-		userBatch = append(userBatch, user)
 
-		// 当批次达到指定大小时，启动一个 goroutine 来处理该批次
-		if len(userBatch) >= int(batchSize) {
+		batch = append(batch, user)
+
+		if len(batch) == batchSize {
+			local := append([]*protocol.MemoryUser(nil), batch...)
 			wg.Add(1)
-			go userProcessBatch(userBatch, &wg, bs, command, ctx, cancel, ret1)
-			userBatch = userBatch[:0] // 清空当前批次
+			sem <- struct{}{}
+			go func() {
+				defer func() { <-sem }()
+				userProcessBatch(ctx, &wg, local, bs, command, cancel, result)
+			}()
+			batch = batch[:0]
 		}
 
-		// 如果 ctx 已取消，退出 Range 遍历
 		select {
 		case <-ctx.Done():
 			return false
@@ -288,46 +318,55 @@ func processUsersInBatchesParallel(userList *sync.Map, users *sync.Map, bs []byt
 		}
 	})
 
-	// 如果最后有剩余的用户（未满批次），并行处理
-	if len(userBatch) > 0 {
+	if len(batch) > 0 {
+		local := append([]*protocol.MemoryUser(nil), batch...)
 		wg.Add(1)
-		go userProcessBatch(userBatch, &wg, bs, command, ctx, cancel, ret1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem }()
+			userProcessBatch(ctx, &wg, local, bs, command, cancel, result)
+		}()
 	}
 
-	// 等待所有 goroutine 完成
-	wg.Wait()
-	r1 := <-ret1
-	if r1.u != nil {
-		u = r1.u
-		aead = r1.aead
-		ret = r1.ret
-		ivLen = r1.ivLen
-		err = r1.err
+	go func() {
+		wg.Wait()
+		close(result)
+	}()
+
+	r, ok := <-result
+	if ok {
+		u = r.u
+		aead = r.aead
+		ret = r.ret
+		ivLen = r.ivLen
+		err = r.err
 	} else {
 		defer cancel()
 	}
 	return
 }
 
-// 处理批次的函数
-func userProcessBatch(batch []*protocol.MemoryUser, wg *sync.WaitGroup, bs []byte, command protocol.RequestCommand, ctx context.Context, cancel context.CancelFunc, ret chan<- *batchResult) {
+func userProcessBatch(ctx context.Context, wg *sync.WaitGroup, batch []*protocol.MemoryUser, bs []byte, command protocol.RequestCommand, cancel context.CancelFunc, result chan<- *batchResult) {
 	defer wg.Done()
+
 	for _, user := range batch {
-		// 如果上下文已经被取消，退出循环
 		select {
 		case <-ctx.Done():
-			return // 上下文已取消，退出
+			return
 		default:
-			u, aead, retData, ivLen, err := checkAEADAndMatch(bs, user, command)
+			u, aead, ret, ivLen, err := checkAEADAndMatch(bs, user, command)
 			if u != nil {
-				ret <- &batchResult{
+				select {
+				case result <- &batchResult{
 					u:     u,
 					aead:  aead,
-					ret:   retData,
+					ret:   ret,
 					ivLen: ivLen,
 					err:   err,
+				}:
+					cancel()
+				default:
 				}
-				cancel() // 取消所有并行任务
 				return
 			}
 		}
@@ -344,26 +383,48 @@ func (v *Validator) GetBehaviorSeed() uint64 {
 	}
 	return v.behaviorSeed
 }
+func (v *Validator) touchUser(email string) {
+	now := time.Now()
+	v.onUsers.Store(email, now)
+	v.onHourUsers.Store(email, now)
+	v.onDayUsers.Store(email, now)
+}
 
 func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	account := user.Account.(*MemoryAccount)
 	aeadCipher := account.Cipher.(*AEADCipher)
 	ivLen = aeadCipher.IVSize()
+	if ivLen < 8 {
+		return
+	}
 	iv := bs[:ivLen]
-	subkey := make([]byte, 32)
+
+	ivTag := binary.LittleEndian.Uint64(iv[:8])
+	if (ivTag ^ account.KeyFP) != account.Expect {
+		return // 直接失败，不进 AEAD
+	}
+	ptr := subkeyPool.Get().(*[]byte)
+	defer subkeyPool.Put(ptr)
+	subkey := *ptr
 	subkey = subkey[:aeadCipher.KeyBytes]
 	hkdfSHA1(account.Key, iv, subkey)
 	aead = aeadCipher.AEADAuthCreator(subkey)
 	var matchErr error
+	var dataPtr *[]byte
 	switch command {
 	case protocol.RequestCommandTCP:
-		data := make([]byte, 4+aead.NonceSize())
+		dataPtr = dataPool.Get().(*[]byte)
+		defer dataPool.Put(dataPtr)
+		data := (*dataPtr)[:4+aead.NonceSize()]
 		ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
 	case protocol.RequestCommandUDP:
-		data := make([]byte, 8192)
+		dataPtr = dataPool.Get().(*[]byte)
+		defer dataPool.Put(dataPtr)
+		data := (*dataPtr)[:8192]
 		ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
 	}
-
+	subkeyPool.Put(ptr)
+	dataPool.Put(dataPtr)
 	if matchErr == nil {
 		u = user
 		err = account.CheckIV(iv)

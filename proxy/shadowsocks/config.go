@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"io"
+	"math/bits"
 
 	"google.golang.org/protobuf/proto"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/HZ-PRE/XrarCore/common/crypto"
 	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/HZ-PRE/XrarCore/common/protocol"
+	"github.com/cespare/xxhash/v2"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
 )
@@ -25,6 +27,8 @@ type MemoryAccount struct {
 	CipherType CipherType
 	Key        []byte
 	Password   string
+	KeyFP      uint64
+	Expect     uint64
 
 	replayFilter antireplay.GeneralizedReplayFilter
 }
@@ -37,6 +41,10 @@ func (a *MemoryAccount) Equals(another protocol.Account) bool {
 		return bytes.Equal(a.Key, account.Key)
 	}
 	return false
+}
+func (a *MemoryAccount) initAccountKey() {
+	a.KeyFP = xxhash.Sum64(a.Key)
+	a.Expect = bits.RotateLeft64(a.KeyFP, 17)
 }
 
 func (a *MemoryAccount) ToProto() proto.Message {
