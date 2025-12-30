@@ -105,7 +105,7 @@ func (v *Validator) GetByEmail(email string) *protocol.MemoryUser {
 func (v *Validator) GetAll() []*protocol.MemoryUser {
 	v.Lock()
 	defer v.Unlock()
-	var u = make([]*protocol.MemoryUser, 0, 100)
+	var u = make([]*protocol.MemoryUser, 0, 1000)
 	v.users.Range(func(key, value interface{}) bool {
 		u = append(u, value.(*protocol.MemoryUser))
 		return true

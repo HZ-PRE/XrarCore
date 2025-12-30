@@ -2,6 +2,7 @@ package shadowsocks
 
 import (
 	"context"
+	sync "sync"
 	"time"
 
 	"github.com/HZ-PRE/XrarCore/common"
@@ -27,6 +28,8 @@ type Server struct {
 	validator     *Validator
 	policyManager policy.Manager
 	cone          bool
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 }
 
 // NewServer create a new Shadowsocks server.
@@ -43,22 +46,33 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		}
 	}
 
+	sCtx, cancel := context.WithCancel(ctx)
 	v := core.MustFromContext(ctx)
 	s := &Server{
 		config:        config,
 		validator:     validator,
 		policyManager: v.GetFeature(policy.ManagerType()).(policy.Manager),
 		cone:          ctx.Value("cone").(bool),
+		cancel:        cancel,
 	}
-	task := &Periodic{
-		Interval: time.Minute * 5,
-		Execute: func() error {
-			validator.DetOnUsers()
-			return nil
-		},
-	}
-	common.Must(task.Start())
+	s.wg.Add(1)
+	go s.runPeriodicTask(sCtx)
 	return s, nil
+}
+func (s *Server) runPeriodicTask(ctx context.Context) {
+	defer s.wg.Done()
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.validator.DetOnUsers()
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // AddUser implements proxy.UserManager.AddUser().
