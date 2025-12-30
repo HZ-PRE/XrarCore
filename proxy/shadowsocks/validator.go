@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
+	"fmt"
 	"hash/crc64"
 	"strings"
 	"sync"
@@ -122,6 +123,7 @@ func (v *Validator) GetAll() []*protocol.MemoryUser {
 func (v *Validator) DetOnUsers() {
 	v.Lock()
 	defer v.Unlock()
+	fmt.Println("清除不在线用户")
 	newDate := time.Now()
 	onUserSize := 0
 	onHourUserSize := 0
@@ -181,74 +183,66 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		return
 	}
 	newDate := time.Now()
-	if v.onUserSize < 3000 {
-		v.onUsers.Range(func(key, value interface{}) bool {
-			if user, ok := v.users.Load(key); ok {
-				u1 := user.(*protocol.MemoryUser)
-				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-				if u == nil {
-					return true
-				}
-				return false
+	v.onUsers.Range(func(key, value interface{}) bool {
+		if user, ok := v.users.Load(key); ok {
+			u1 := user.(*protocol.MemoryUser)
+			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+			if u == nil {
+				return true
 			}
-			return true
-
-		})
-	} else {
-		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.users, &v.onUsers, bs, command, 3000)
-	}
+			return false
+		}
+		return true
+	})
 	if u != nil {
 		v.onUsers.Store(u.Email, newDate)
 		v.onHourUsers.Store(u.Email, newDate)
 		v.onDayUsers.Store(u.Email, newDate)
 		return
 	}
-	if v.onHourUserSize < 5000 {
-		v.onHourUsers.Range(func(key, value interface{}) bool {
-			if user, ok := v.users.Load(key); ok {
-				u1 := user.(*protocol.MemoryUser)
-				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-				if u == nil {
-					return true
-				}
-				return false
+	v.onHourUsers.Range(func(key, value interface{}) bool {
+		if user, ok := v.users.Load(key); ok {
+			u1 := user.(*protocol.MemoryUser)
+			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+			if u == nil {
+				return true
 			}
-			return true
-
-		})
-	} else {
-		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.users, &v.onHourUsers, bs, command, 5000)
-
-	}
+			return false
+		}
+		return true
+	})
 	if u != nil {
 		v.onUsers.Store(u.Email, newDate)
 		v.onHourUsers.Store(u.Email, newDate)
 		v.onDayUsers.Store(u.Email, newDate)
 		return
 	}
-	if v.onDayUserSize < 7000 {
-		v.onDayUsers.Range(func(key, value interface{}) bool {
-			if user, ok := v.users.Load(key); ok {
-				u1 := user.(*protocol.MemoryUser)
-				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-				if u == nil {
-					return true
-				}
-				return false
+	v.onDayUsers.Range(func(key, value interface{}) bool {
+		if user, ok := v.users.Load(key); ok {
+			u1 := user.(*protocol.MemoryUser)
+			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+			if u == nil {
+				return true
 			}
-			return true
+			return false
+		}
+		return true
 
-		})
-	} else {
-		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.users, &v.onDayUsers, bs, command, 7000)
-	}
+	})
 	if u != nil {
 		v.onUsers.Store(u.Email, newDate)
 		v.onHourUsers.Store(u.Email, newDate)
 		v.onDayUsers.Store(u.Email, newDate)
 		return
 	}
-	u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, bs, command, 14000)
+	v.users.Range(func(key, value interface{}) bool {
+		u1 := value.(*protocol.MemoryUser)
+		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+		if u == nil {
+			return true
+		}
+		return false
+	})
 	if u != nil {
 		v.onUsers.Store(u.Email, newDate)
 		v.onHourUsers.Store(u.Email, newDate)
