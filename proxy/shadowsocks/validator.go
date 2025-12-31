@@ -198,72 +198,65 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 				if u == nil {
 					return true
 				}
-				v.touchUser(u.Email)
 				return false
 			}
 			return true
 
 		})
-		if u != nil {
-			return
-		}
 	} else {
-		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.users, &v.onUsers, bs, command, 3000)
-		if u != nil {
-			v.touchUser(u.Email)
-			return
-		}
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, &v.onUsers, bs, command, 3000)
+	}
+	if u != nil {
+		v.touchUser(u.Email)
+		return
 	}
 	if v.onHourUserSize < 5000 {
 		v.onHourUsers.Range(func(key, value interface{}) bool {
+			if _, ok := v.onUsers.Load(key); ok {
+				return true
+			}
 			if user, ok := v.users.Load(key); ok {
 				u1 := user.(*protocol.MemoryUser)
 				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
 				if u == nil {
 					return true
 				}
-				v.touchUser(u.Email)
 				return false
 			}
 			return true
 
 		})
-		if u != nil {
-			return
-		}
 	} else {
-		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.users, &v.onHourUsers, bs, command, 5000)
-		if u != nil {
-			v.touchUser(u.Email)
-			return
-		}
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onUsers, &v.users, &v.onHourUsers, bs, command, 5000)
+	}
+	if u != nil {
+		v.touchUser(u.Email)
+		return
 	}
 	if v.onDayUserSize < 7000 {
 		v.onDayUsers.Range(func(key, value interface{}) bool {
+			if _, ok := v.onHourUsers.Load(key); ok {
+				return true
+			}
 			if user, ok := v.users.Load(key); ok {
 				u1 := user.(*protocol.MemoryUser)
 				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
 				if u == nil {
 					return true
 				}
-				v.touchUser(u.Email)
 				return false
 			}
 			return true
 
 		})
-		if u != nil {
-			return
-		}
 	} else {
-		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.users, &v.onDayUsers, bs, command, 7000)
-		if u != nil {
-			v.touchUser(u.Email)
-			return
-		}
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onHourUsers, &v.users, &v.onDayUsers, bs, command, 7000)
 	}
-
-	u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, bs, command, 14000)
+	if u != nil {
+		v.touchUser(u.Email)
+		return
+	}
+	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onDayUsers, nil, &v.users, bs, command, 14000)
 	if u != nil {
 		v.touchUser(u.Email)
 		return
@@ -272,7 +265,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 }
 
 // 使用并行处理的批量函数
-func processUsersInBatchesParallel(userList *sync.Map, users *sync.Map, bs []byte, command protocol.RequestCommand, batchSize int) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
+func processUsersInBatchesParallel(topUsers *sync.Map, userList *sync.Map, users *sync.Map, bs []byte, command protocol.RequestCommand, batchSize int) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -282,8 +275,12 @@ func processUsersInBatchesParallel(userList *sync.Map, users *sync.Map, bs []byt
 	batch := make([]*protocol.MemoryUser, 0, batchSize)
 	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
 	users.Range(func(key, value any) bool {
+		if topUsers != nil {
+			if _, ok := topUsers.Load(key); ok {
+				return true
+			}
+		}
 		var user *protocol.MemoryUser
-
 		if userList != nil {
 			if v, ok := userList.Load(key); ok {
 				user = v.(*protocol.MemoryUser)
