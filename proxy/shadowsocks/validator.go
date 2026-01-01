@@ -39,22 +39,6 @@ type batchResult struct {
 	err   error
 }
 
-var (
-	subkeyPool = sync.Pool{
-		New: func() any {
-			b := make([]byte, 32)
-			return &b
-		},
-	}
-
-	dataPool = sync.Pool{
-		New: func() any {
-			b := make([]byte, 8192) // 用于 UDP 的较大缓冲区
-			return &b
-		},
-	}
-)
-
 var ErrNotFound = errors.New("Not Found")
 
 // Add a Shadowsocks user.
@@ -388,25 +372,19 @@ func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.Re
 		return
 	}
 	iv := bs[:ivLen]
-	ptr := subkeyPool.Get().(*[]byte)
-	defer subkeyPool.Put(ptr)
-	subkey := *ptr
+	subkey := make([]byte, 32)
 	subkey = subkey[:aeadCipher.KeyBytes]
 	hkdfSHA1(account.Key, iv, subkey)
 	aead = aeadCipher.AEADAuthCreator(subkey)
 	var matchErr error
-	var dataPtr = dataPool.Get().(*[]byte)
-	defer dataPool.Put(dataPtr)
 	switch command {
 	case protocol.RequestCommandTCP:
-		data := (*dataPtr)[:4+aead.NonceSize()]
+		data := make([]byte, 4+aead.NonceSize())
 		ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
 	case protocol.RequestCommandUDP:
-		data := (*dataPtr)[:8192]
+		data := make([]byte, 8192)
 		ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
 	}
-	subkeyPool.Put(ptr)
-	dataPool.Put(dataPtr)
 	if matchErr == nil {
 		u = user
 		err = account.CheckIV(iv)
