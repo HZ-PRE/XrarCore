@@ -84,36 +84,6 @@ func (v *Validator) Del(email string) error {
 	return nil
 }
 
-// GetByEmail Get a Shadowsocks user with a non-empty Email.
-func (v *Validator) GetByEmail(email string) *protocol.MemoryUser {
-	if email == "" {
-		return nil
-	}
-	email = strings.ToLower(email)
-	if value, ok := v.legacyUsers.Load(email); ok {
-		return value.(*protocol.MemoryUser)
-	}
-	if value, ok := v.users.Load(email); ok {
-		return value.(*protocol.MemoryUser)
-	}
-	return nil
-}
-
-// GetAll get all users
-func (v *Validator) GetAll() []*protocol.MemoryUser {
-	var u = make([]*protocol.MemoryUser, 0, 2000)
-	v.users.Range(func(key, value interface{}) bool {
-		u = append(u, value.(*protocol.MemoryUser))
-		return true
-	})
-	v.legacyUsers.Range(func(key, value interface{}) bool {
-		u = append(u, value.(*protocol.MemoryUser))
-		return true
-	})
-	v.userSize = len(u)
-	return u
-}
-
 // DetOnUsers 清除不在线用户
 func (v *Validator) DetOnUsers() {
 	v.Lock()
@@ -153,11 +123,6 @@ func (v *Validator) DetOnUsers() {
 	v.onUserSize = onUserSize
 	v.onHourUserSize = onHourUserSize
 	v.onDayUserSize = onDayUserSize
-}
-
-// GetCount get users count
-func (v *Validator) GetCount() int64 {
-	return int64(v.userSize)
 }
 
 // Get a Shadowsocks user.
@@ -347,16 +312,6 @@ func userProcessBatch(ctx context.Context, batch []*protocol.MemoryUser, bs []by
 	}
 }
 
-func (v *Validator) GetBehaviorSeed() uint64 {
-	v.Lock()
-	defer v.Unlock()
-
-	v.behaviorFused = true
-	if v.behaviorSeed == 0 {
-		v.behaviorSeed = dice.RollUint64()
-	}
-	return v.behaviorSeed
-}
 func (v *Validator) touchUser(email string) {
 	now := time.Now()
 	v.onUsers.Store(email, now)
@@ -391,4 +346,15 @@ func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.Re
 		return
 	}
 	return nil, nil, nil, 0, matchErr
+}
+
+func (v *Validator) GetBehaviorSeed() uint64 {
+	v.Lock()
+	defer v.Unlock()
+
+	v.behaviorFused = true
+	if v.behaviorSeed == 0 {
+		v.behaviorSeed = dice.RollUint64()
+	}
+	return v.behaviorSeed
 }

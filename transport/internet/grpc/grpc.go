@@ -1,3 +1,3 @@
 package grpc
 
-const protocolName = "grpc"
+//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen

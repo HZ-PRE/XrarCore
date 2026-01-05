@@ -12,7 +12,6 @@ import (
 	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/common/protocol"
-	"github.com/HZ-PRE/XrarCore/common/signal/done"
 	"github.com/HZ-PRE/XrarCore/transport/pipe"
 )
 
@@ -51,14 +50,11 @@ func (m *SessionManager) Count() int {
 	return int(m.count)
 }
 
-func (m *SessionManager) Allocate(Strategy *ClientStrategy) *Session {
+func (m *SessionManager) Allocate() *Session {
 	m.Lock()
 	defer m.Unlock()
 
-	MaxConcurrency := int(Strategy.MaxConcurrency)
-	MaxConnection := uint16(Strategy.MaxConnection)
-
-	if m.closed || (MaxConcurrency > 0 && len(m.sessions) >= MaxConcurrency) || (MaxConnection > 0 && m.count >= MaxConnection) {
+	if m.closed {
 		return nil
 	}
 
@@ -66,7 +62,6 @@ func (m *SessionManager) Allocate(Strategy *ClientStrategy) *Session {
 	s := &Session{
 		ID:     m.count,
 		parent: m,
-		done:   done.New(),
 	}
 	m.sessions[s.ID] = s
 	return s
@@ -117,7 +112,7 @@ func (m *SessionManager) Get(id uint16) (*Session, bool) {
 	return s, found
 }
 
-func (m *SessionManager) CloseIfNoSessionAndIdle(checkSize int, checkCount int) bool {
+func (m *SessionManager) CloseIfNoSession() bool {
 	m.Lock()
 	defer m.Unlock()
 
@@ -125,13 +120,11 @@ func (m *SessionManager) CloseIfNoSessionAndIdle(checkSize int, checkCount int) 
 		return true
 	}
 
-	if len(m.sessions) != 0 || checkSize != 0 || checkCount != int(m.count) {
+	if len(m.sessions) != 0 {
 		return false
 	}
 
 	m.closed = true
-
-	m.sessions = nil
 	return true
 }
 
@@ -161,7 +154,6 @@ type Session struct {
 	ID           uint16
 	transferType protocol.TransferType
 	closed       bool
-	done         *done.Instance
 	XUDP         *XUDP
 }
 
@@ -176,9 +168,6 @@ func (s *Session) Close(locked bool) error {
 		return nil
 	}
 	s.closed = true
-	if s.done != nil {
-		s.done.Close()
-	}
 	if s.XUDP == nil {
 		common.Interrupt(s.input)
 		common.Close(s.output)

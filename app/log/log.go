@@ -1,10 +1,9 @@
 package log
 
+//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
+
 import (
 	"context"
-	"fmt"
-	"regexp"
-	"strings"
 	"sync"
 
 	"github.com/HZ-PRE/XrarCore/common"
@@ -31,8 +30,8 @@ func New(ctx context.Context, config *Config) (*Instance, error) {
 	}
 	log.RegisterHandler(g)
 
-	// start logger now,
-	// then other modules will be able to log during initialization
+	// Start logger instantly on initialization
+	// Other modules would log during initialization
 	if err := g.startInternal(); err != nil {
 		return nil, err
 	}
@@ -102,25 +101,18 @@ func (g *Instance) Handle(msg log.Message) {
 		return
 	}
 
-	var Msg log.Message
-	if g.config.MaskAddress != "" {
-		Msg = &MaskedMsgWrapper{Message: msg, config: g.config}
-	} else {
-		Msg = msg
-	}
-
 	switch msg := msg.(type) {
 	case *log.AccessMessage:
 		if g.accessLogger != nil {
-			g.accessLogger.Handle(Msg)
+			g.accessLogger.Handle(msg)
 		}
 	case *log.DNSLog:
 		if g.dns && g.accessLogger != nil {
-			g.accessLogger.Handle(Msg)
+			g.accessLogger.Handle(msg)
 		}
 	case *log.GeneralMessage:
 		if g.errorLogger != nil && msg.Severity <= g.config.ErrorLogLevel {
-			g.errorLogger.Handle(Msg)
+			g.errorLogger.Handle(msg)
 		}
 	default:
 		// Swallow
@@ -147,56 +139,6 @@ func (g *Instance) Close() error {
 	g.errorLogger = nil
 
 	return nil
-}
-
-// MaskedMsgWrapper is to wrap the string() method to mask IP addresses in the log.
-type MaskedMsgWrapper struct {
-	log.Message
-	config *Config
-}
-
-func (m *MaskedMsgWrapper) String() string {
-	str := m.Message.String()
-
-	ipv4Regex := regexp.MustCompile(`(\d{1,3}\.){3}\d{1,3}`)
-	ipv6Regex := regexp.MustCompile(`((?:[\da-fA-F]{0,4}:[\da-fA-F]{0,4}){2,7})(?:[\/\\%](\d{1,3}))?`)
-
-	// Process ipv4
-	maskedMsg := ipv4Regex.ReplaceAllStringFunc(str, func(ip string) string {
-		parts := strings.Split(ip, ".")
-		switch m.config.MaskAddress {
-		case "half":
-			return fmt.Sprintf("%s.%s.*.*", parts[0], parts[1])
-		case "quarter":
-			return fmt.Sprintf("%s.*.*.*", parts[0])
-		case "full":
-			return "[Masked IPv4]"
-		default:
-			return ip
-		}
-	})
-
-	// process ipv6
-	maskedMsg = ipv6Regex.ReplaceAllStringFunc(maskedMsg, func(ip string) string {
-		parts := strings.Split(ip, ":")
-		switch m.config.MaskAddress {
-		case "half":
-			if len(parts) >= 2 {
-				return fmt.Sprintf("%s:%s::/32", parts[0], parts[1])
-			}
-		case "quarter":
-			if len(parts) >= 1 {
-				return fmt.Sprintf("%s::/16", parts[0])
-			}
-		case "full":
-			return "Masked IPv6" // Do not use [Masked IPv6] like ipv4, or you will get "[[Masked IPv6]]" (v6 address already has [])
-		default:
-			return ip
-		}
-		return ip
-	})
-
-	return maskedMsg
 }
 
 func init() {

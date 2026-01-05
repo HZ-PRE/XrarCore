@@ -3,12 +3,10 @@ package encoding
 import (
 	"context"
 	"io"
-	"net"
 
 	"github.com/HZ-PRE/XrarCore/common/buf"
 	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/HZ-PRE/XrarCore/common/protocol"
-	"github.com/HZ-PRE/XrarCore/common/session"
 	"github.com/HZ-PRE/XrarCore/proxy"
 	"github.com/HZ-PRE/XrarCore/proxy/vless"
 	"google.golang.org/protobuf/proto"
@@ -63,14 +61,15 @@ func DecodeHeaderAddons(buffer *buf.Buffer, reader io.Reader) (*Addons, error) {
 }
 
 // EncodeBodyAddons returns a Writer that auto-encrypt content written by caller.
-func EncodeBodyAddons(writer buf.Writer, request *protocol.RequestHeader, requestAddons *Addons, state *proxy.TrafficState, isUplink bool, context context.Context, conn net.Conn, ob *session.Outbound) buf.Writer {
+func EncodeBodyAddons(writer io.Writer, request *protocol.RequestHeader, requestAddons *Addons, state *proxy.TrafficState, context context.Context) buf.Writer {
 	if request.Command == protocol.RequestCommandUDP {
-		return NewMultiLengthPacketWriter(writer)
+		return NewMultiLengthPacketWriter(writer.(buf.Writer))
 	}
+	w := buf.NewWriter(writer)
 	if requestAddons.Flow == vless.XRV {
-		return proxy.NewVisionWriter(writer, state, isUplink, context, conn, ob, request.User.Account.(*vless.MemoryAccount).Testseed)
+		w = proxy.NewVisionWriter(w, state, context)
 	}
-	return writer
+	return w
 }
 
 // DecodeBodyAddons returns a Reader from which caller can fetch decrypted body.

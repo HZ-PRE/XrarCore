@@ -31,8 +31,6 @@ type AccessMessage struct {
 
 func (m *AccessMessage) String() string {
 	builder := strings.Builder{}
-	builder.WriteString("from")
-	builder.WriteByte(' ')
 	builder.WriteString(serial.ToString(m.From))
 	builder.WriteByte(' ')
 	builder.WriteString(string(m.Status))

@@ -75,11 +75,15 @@ func TestShadowsocksChaCha20Poly1305TCP(t *testing.T) {
 		Outbound: []*core.OutboundHandlerConfig{
 			{
 				ProxySettings: serial.ToTypedMessage(&shadowsocks.ClientConfig{
-					Server: &protocol.ServerEndpoint{
-						Address: net.NewIPOrDomain(net.LocalHostIP),
-						Port:    uint32(serverPort),
-						User: &protocol.User{
-							Account: account,
+					Server: []*protocol.ServerEndpoint{
+						{
+							Address: net.NewIPOrDomain(net.LocalHostIP),
+							Port:    uint32(serverPort),
+							User: []*protocol.User{
+								{
+									Account: account,
+								},
+							},
 						},
 					},
 				}),
@@ -92,7 +96,7 @@ func TestShadowsocksChaCha20Poly1305TCP(t *testing.T) {
 	defer CloseAllServers(servers)
 
 	var errGroup errgroup.Group
-	for range 3 {
+	for i := 0; i < 10; i++ {
 		errGroup.Go(testTCPConn(clientPort, 10240*1024, time.Second*20))
 	}
 	if err := errGroup.Wait(); err != nil {
@@ -167,11 +171,15 @@ func TestShadowsocksAES256GCMTCP(t *testing.T) {
 		Outbound: []*core.OutboundHandlerConfig{
 			{
 				ProxySettings: serial.ToTypedMessage(&shadowsocks.ClientConfig{
-					Server: &protocol.ServerEndpoint{
-						Address: net.NewIPOrDomain(net.LocalHostIP),
-						Port:    uint32(serverPort),
-						User: &protocol.User{
-							Account: account,
+					Server: []*protocol.ServerEndpoint{
+						{
+							Address: net.NewIPOrDomain(net.LocalHostIP),
+							Port:    uint32(serverPort),
+							User: []*protocol.User{
+								{
+									Account: account,
+								},
+							},
 						},
 					},
 				}),
@@ -184,7 +192,7 @@ func TestShadowsocksAES256GCMTCP(t *testing.T) {
 	defer CloseAllServers(servers)
 
 	var errGroup errgroup.Group
-	for range 3 {
+	for i := 0; i < 10; i++ {
 		errGroup.Go(testTCPConn(clientPort, 10240*1024, time.Second*20))
 	}
 
@@ -260,11 +268,15 @@ func TestShadowsocksAES128GCMUDP(t *testing.T) {
 		Outbound: []*core.OutboundHandlerConfig{
 			{
 				ProxySettings: serial.ToTypedMessage(&shadowsocks.ClientConfig{
-					Server: &protocol.ServerEndpoint{
-						Address: net.NewIPOrDomain(net.LocalHostIP),
-						Port:    uint32(serverPort),
-						User: &protocol.User{
-							Account: account,
+					Server: []*protocol.ServerEndpoint{
+						{
+							Address: net.NewIPOrDomain(net.LocalHostIP),
+							Port:    uint32(serverPort),
+							User: []*protocol.User{
+								{
+									Account: account,
+								},
+							},
 						},
 					},
 				}),
@@ -277,7 +289,7 @@ func TestShadowsocksAES128GCMUDP(t *testing.T) {
 	defer CloseAllServers(servers)
 
 	var errGroup errgroup.Group
-	for range 3 {
+	for i := 0; i < 2; i++ {
 		errGroup.Go(testUDPConn(clientPort, 1024, time.Second*5))
 	}
 	if err := errGroup.Wait(); err != nil {
@@ -358,11 +370,15 @@ func TestShadowsocksAES128GCMUDPMux(t *testing.T) {
 					},
 				}),
 				ProxySettings: serial.ToTypedMessage(&shadowsocks.ClientConfig{
-					Server: &protocol.ServerEndpoint{
-						Address: net.NewIPOrDomain(net.LocalHostIP),
-						Port:    uint32(serverPort),
-						User: &protocol.User{
-							Account: account,
+					Server: []*protocol.ServerEndpoint{
+						{
+							Address: net.NewIPOrDomain(net.LocalHostIP),
+							Port:    uint32(serverPort),
+							User: []*protocol.User{
+								{
+									Account: account,
+								},
+							},
 						},
 					},
 				}),
@@ -375,7 +391,7 @@ func TestShadowsocksAES128GCMUDPMux(t *testing.T) {
 	defer CloseAllServers(servers)
 
 	var errGroup errgroup.Group
-	for range 3 {
+	for i := 0; i < 2; i++ {
 		errGroup.Go(testUDPConn(clientPort, 1024, time.Second*5))
 	}
 	if err := errGroup.Wait(); err != nil {
@@ -439,11 +455,15 @@ func TestShadowsocksNone(t *testing.T) {
 		Outbound: []*core.OutboundHandlerConfig{
 			{
 				ProxySettings: serial.ToTypedMessage(&shadowsocks.ClientConfig{
-					Server: &protocol.ServerEndpoint{
-						Address: net.NewIPOrDomain(net.LocalHostIP),
-						Port:    uint32(serverPort),
-						User: &protocol.User{
-							Account: account,
+					Server: []*protocol.ServerEndpoint{
+						{
+							Address: net.NewIPOrDomain(net.LocalHostIP),
+							Port:    uint32(serverPort),
+							User: []*protocol.User{
+								{
+									Account: account,
+								},
+							},
 						},
 					},
 				}),
@@ -457,7 +477,7 @@ func TestShadowsocksNone(t *testing.T) {
 	defer CloseAllServers(servers)
 
 	var errGroup errgroup.Group
-	for range 3 {
+	for i := 0; i < 10; i++ {
 		errGroup.Go(testTCPConn(clientPort, 10240*1024, time.Second*20))
 	}
 

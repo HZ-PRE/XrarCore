@@ -8,7 +8,6 @@ import (
 	"github.com/HZ-PRE/XrarCore/common/mux"
 	"github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/common/session"
-	"github.com/HZ-PRE/XrarCore/common/signal"
 	"github.com/HZ-PRE/XrarCore/common/task"
 	"github.com/HZ-PRE/XrarCore/features/routing"
 	"github.com/HZ-PRE/XrarCore/transport"
@@ -53,11 +52,6 @@ func (b *Bridge) cleanup() {
 		if w.IsActive() {
 			activeWorkers = append(activeWorkers, w)
 		}
-		if w.Closed() {
-			if w.Timer != nil {
-				w.Timer.SetTimeout(0)
-			}
-		}
 	}
 
 	if len(activeWorkers) != len(b.workers) {
@@ -99,11 +93,10 @@ func (b *Bridge) Close() error {
 }
 
 type BridgeWorker struct {
-	Tag        string
-	Worker     *mux.ServerWorker
-	Dispatcher routing.Dispatcher
-	State      Control_State
-	Timer      *signal.ActivityTimer
+	tag        string
+	worker     *mux.ServerWorker
+	dispatcher routing.Dispatcher
+	state      Control_State
 }
 
 func NewBridgeWorker(domain string, tag string, d routing.Dispatcher) (*BridgeWorker, error) {
@@ -121,20 +114,16 @@ func NewBridgeWorker(domain string, tag string, d routing.Dispatcher) (*BridgeWo
 	}
 
 	w := &BridgeWorker{
-		Dispatcher: d,
-		Tag:        tag,
+		dispatcher: d,
+		tag:        tag,
 	}
 
 	worker, err := mux.NewServerWorker(context.Background(), w, link)
 	if err != nil {
 		return nil, err
 	}
-	w.Worker = worker
+	w.worker = worker
 
-	terminate := func() {
-		worker.Close()
-	}
-	w.Timer = signal.CancelAfterInactivity(ctx, terminate, 60*time.Second)
 	return w, nil
 }
 
@@ -151,65 +140,48 @@ func (w *BridgeWorker) Close() error {
 }
 
 func (w *BridgeWorker) IsActive() bool {
-	return w.State == Control_ACTIVE && !w.Worker.Closed()
-}
-
-func (w *BridgeWorker) Closed() bool {
-	return w.Worker.Closed()
+	return w.state == Control_ACTIVE && !w.worker.Closed()
 }
 
 func (w *BridgeWorker) Connections() uint32 {
-	return w.Worker.ActiveConnections()
+	return w.worker.ActiveConnections()
 }
 
 func (w *BridgeWorker) handleInternalConn(link *transport.Link) {
-	reader := link.Reader
-	for {
-		mb, err := reader.ReadMultiBuffer()
-		if err != nil {
-			if w.Timer != nil {
-				if w.Closed() {
-					w.Timer.SetTimeout(0)
-				} else {
-					w.Timer.SetTimeout(24 * time.Hour)
+	go func() {
+		reader := link.Reader
+		for {
+			mb, err := reader.ReadMultiBuffer()
+			if err != nil {
+				break
+			}
+			for _, b := range mb {
+				var ctl Control
+				if err := proto.Unmarshal(b.Bytes(), &ctl); err != nil {
+					errors.LogInfoInner(context.Background(), err, "failed to parse proto message")
+					break
+				}
+				if ctl.State != w.state {
+					w.state = ctl.State
 				}
 			}
-			return
 		}
-		if w.Timer != nil {
-			w.Timer.Update()
-		}
-		for _, b := range mb {
-			var ctl Control
-			if err := proto.Unmarshal(b.Bytes(), &ctl); err != nil {
-				errors.LogInfoInner(context.Background(), err, "failed to parse proto message")
-				if w.Timer != nil {
-					w.Timer.SetTimeout(0)
-				}
-				return
-			}
-			if ctl.State != w.State {
-				w.State = ctl.State
-			}
-		}
-	}
+	}()
 }
 
 func (w *BridgeWorker) Dispatch(ctx context.Context, dest net.Destination) (*transport.Link, error) {
 	if !isInternalDomain(dest) {
-		if session.InboundFromContext(ctx) == nil {
-			ctx = session.ContextWithInbound(ctx, &session.Inbound{
-				Tag: w.Tag,
-			})
-		}
-		return w.Dispatcher.Dispatch(ctx, dest)
+		ctx = session.ContextWithInbound(ctx, &session.Inbound{
+			Tag: w.tag,
+		})
+		return w.dispatcher.Dispatch(ctx, dest)
 	}
 
 	opt := []pipe.Option{pipe.WithSizeLimit(16 * 1024)}
 	uplinkReader, uplinkWriter := pipe.New(opt...)
 	downlinkReader, downlinkWriter := pipe.New(opt...)
 
-	go w.handleInternalConn(&transport.Link{
+	w.handleInternalConn(&transport.Link{
 		Reader: downlinkReader,
 		Writer: uplinkWriter,
 	})
@@ -222,17 +194,12 @@ func (w *BridgeWorker) Dispatch(ctx context.Context, dest net.Destination) (*tra
 
 func (w *BridgeWorker) DispatchLink(ctx context.Context, dest net.Destination, link *transport.Link) error {
 	if !isInternalDomain(dest) {
-		if session.InboundFromContext(ctx) == nil {
-			ctx = session.ContextWithInbound(ctx, &session.Inbound{
-				Tag: w.Tag,
-			})
-		}
-		return w.Dispatcher.DispatchLink(ctx, dest, link)
+		ctx = session.ContextWithInbound(ctx, &session.Inbound{
+			Tag: w.tag,
+		})
+		return w.dispatcher.DispatchLink(ctx, dest, link)
 	}
 
-	if d, ok := w.Dispatcher.(routing.WrapLinkDispatcher); ok {
-		link = d.WrapLink(ctx, link)
-	}
 	w.handleInternalConn(link)
 
 	return nil

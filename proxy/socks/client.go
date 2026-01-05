@@ -14,6 +14,7 @@ import (
 	"github.com/HZ-PRE/XrarCore/common/signal"
 	"github.com/HZ-PRE/XrarCore/common/task"
 	"github.com/HZ-PRE/XrarCore/core"
+	"github.com/HZ-PRE/XrarCore/features/dns"
 	"github.com/HZ-PRE/XrarCore/features/policy"
 	"github.com/HZ-PRE/XrarCore/transport"
 	"github.com/HZ-PRE/XrarCore/transport/internet"
@@ -22,24 +23,34 @@ import (
 
 // Client is a Socks5 client.
 type Client struct {
-	server        *protocol.ServerSpec
+	serverPicker  protocol.ServerPicker
 	policyManager policy.Manager
+	version       Version
+	dns           dns.Client
 }
 
 // NewClient create a new Socks5 client based on the given config.
 func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
-	if config.Server == nil {
-		return nil, errors.New(`no target server found`)
+	serverList := protocol.NewServerList()
+	for _, rec := range config.Server {
+		s, err := protocol.NewServerSpecFromPB(rec)
+		if err != nil {
+			return nil, errors.New("failed to get server spec").Base(err)
+		}
+		serverList.AddServer(s)
 	}
-	server, err := protocol.NewServerSpecFromPB(config.Server)
-	if err != nil {
-		return nil, errors.New("failed to get server spec").Base(err)
+	if serverList.Size() == 0 {
+		return nil, errors.New("0 target server")
 	}
 
 	v := core.MustFromContext(ctx)
 	c := &Client{
-		server:        server,
+		serverPicker:  protocol.NewRoundRobinServerPicker(serverList),
 		policyManager: v.GetFeature(policy.ManagerType()).(policy.Manager),
+		version:       config.Version,
+	}
+	if config.Version == Version_SOCKS4 {
+		c.dns = v.GetFeature(dns.ClientType()).(dns.Client)
 	}
 
 	return c, nil
@@ -58,12 +69,15 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 	destination := ob.Target
 
 	// Outbound server.
-	server := c.server
-	dest := server.Destination
+	var server *protocol.ServerSpec
+	// Outbound server's destination.
+	var dest net.Destination
 	// Connection to the outbound server.
 	var conn stat.Connection
 
 	if err := retry.ExponentialBackoff(5, 100).On(func() error {
+		server = c.serverPicker.PickServer()
+		dest = server.Destination()
 		rawConn, err := dialer.Dial(ctx, dest)
 		if err != nil {
 			return err
@@ -90,11 +104,35 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		Port:    destination.Port,
 	}
 
+	switch c.version {
+	case Version_SOCKS4:
+		if request.Address.Family().IsDomain() {
+			ips, err := c.dns.LookupIP(request.Address.Domain(), dns.IPOption{
+				IPv4Enable: true,
+			})
+			if err != nil {
+				return err
+			} else if len(ips) == 0 {
+				return dns.ErrEmptyResponse
+			}
+			request.Address = net.IPAddress(ips[0])
+		}
+		fallthrough
+	case Version_SOCKS4A:
+		request.Version = socks4Version
+
+		if destination.Network == net.Network_UDP {
+			return errors.New("udp is not supported in socks4")
+		} else if destination.Address.Family().IsIPv6() {
+			return errors.New("ipv6 is not supported in socks4")
+		}
+	}
+
 	if destination.Network == net.Network_UDP {
 		request.Command = protocol.RequestCommandUDP
 	}
 
-	user := server.User
+	user := server.PickUser()
 	if user != nil {
 		request.User = user
 		p = c.policyManager.ForLevel(user.Level)
@@ -139,7 +177,6 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 			return buf.Copy(link.Reader, buf.NewWriter(conn), buf.UpdateActivity(timer))
 		}
 		responseFunc = func() error {
-			ob.CanSpliceCopy = 1
 			defer timer.SetTimeout(p.Timeouts.UplinkOnly)
 			return buf.Copy(buf.NewReader(conn), link.Writer, buf.UpdateActivity(timer))
 		}
@@ -155,7 +192,6 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 			return buf.Copy(link.Reader, writer, buf.UpdateActivity(timer))
 		}
 		responseFunc = func() error {
-			ob.CanSpliceCopy = 1
 			defer timer.SetTimeout(p.Timeouts.UplinkOnly)
 			reader := &UDPReader{Reader: udpConn}
 			return buf.Copy(reader, link.Writer, buf.UpdateActivity(timer))

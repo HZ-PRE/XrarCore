@@ -1,13 +1,10 @@
 package protocol
 
-import (
-	"github.com/HZ-PRE/XrarCore/common/errors"
-	"github.com/HZ-PRE/XrarCore/common/serial"
-)
+import "github.com/HZ-PRE/XrarCore/common/errors"
 
 func (u *User) GetTypedAccount() (Account, error) {
 	if u.GetAccount() == nil {
-		return nil, errors.New("Account is missing").AtWarning()
+		return nil, errors.New("Account missing").AtWarning()
 	}
 
 	rawAccount, err := u.Account.GetInstance()
@@ -33,17 +30,6 @@ func (u *User) ToMemoryUser() (*MemoryUser, error) {
 		Email:   u.Email,
 		Level:   u.Level,
 	}, nil
-}
-
-func ToProtoUser(mu *MemoryUser) *User {
-	if mu == nil {
-		return nil
-	}
-	return &User{
-		Account: serial.ToTypedMessage(mu.Account.ToProto()),
-		Email:   mu.Email,
-		Level:   mu.Level,
-	}
 }
 
 // MemoryUser is a parsed form of User, to reduce number of parsing of Account proto.

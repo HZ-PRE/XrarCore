@@ -1,5 +1,7 @@
 package outbound
 
+//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
+
 import (
 	"context"
 	"sort"
@@ -143,21 +145,6 @@ func (m *Manager) RemoveHandler(ctx context.Context, tag string) error {
 	}
 
 	return nil
-}
-
-// ListHandlers implements outbound.Manager.
-func (m *Manager) ListHandlers(ctx context.Context) []outbound.Handler {
-	m.access.RLock()
-	defer m.access.RUnlock()
-
-	response := make([]outbound.Handler, len(m.untaggedHandlers))
-	copy(response, m.untaggedHandlers)
-
-	for _, v := range m.taggedHandler {
-		response = append(response, v)
-	}
-
-	return response
 }
 
 // Select implements outbound.HandlerSelector.

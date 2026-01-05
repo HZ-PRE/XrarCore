@@ -11,27 +11,27 @@ import (
 	"github.com/HZ-PRE/XrarCore/main/confloader"
 )
 
-func MergeConfigFromFiles(files []*core.ConfigSource) (string, error) {
-	c, err := mergeConfigs(files)
+func MergeConfigFromFiles(files []string, formats []string) (string, error) {
+	c, err := mergeConfigs(files, formats)
 	if err != nil {
 		return "", err
 	}
 
-	if j, ok := creflect.MarshalToJson(c, true); ok {
+	if j, ok := creflect.MarshalToJson(c); ok {
 		return j, nil
 	}
 	return "", errors.New("marshal to json failed.").AtError()
 }
 
-func mergeConfigs(files []*core.ConfigSource) (*conf.Config, error) {
+func mergeConfigs(files []string, formats []string) (*conf.Config, error) {
 	cf := &conf.Config{}
 	for i, file := range files {
 		errors.LogInfo(context.Background(), "Reading config: ", file)
-		r, err := confloader.LoadConfig(file.Name)
+		r, err := confloader.LoadConfig(file)
 		if err != nil {
 			return nil, errors.New("failed to read config: ", file).Base(err)
 		}
-		c, err := ReaderDecoderByFormat[file.Format](r)
+		c, err := ReaderDecoderByFormat[formats[i]](r)
 		if err != nil {
 			return nil, errors.New("failed to decode config: ", file).Base(err)
 		}
@@ -39,13 +39,13 @@ func mergeConfigs(files []*core.ConfigSource) (*conf.Config, error) {
 			*cf = *c
 			continue
 		}
-		cf.Override(c, file.Name)
+		cf.Override(c, file)
 	}
 	return cf, nil
 }
 
-func BuildConfig(files []*core.ConfigSource) (*core.Config, error) {
-	config, err := mergeConfigs(files)
+func BuildConfig(files []string, formats []string) (*core.Config, error) {
+	config, err := mergeConfigs(files, formats)
 	if err != nil {
 		return nil, err
 	}

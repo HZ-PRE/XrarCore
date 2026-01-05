@@ -4,16 +4,14 @@ package wireguard
 
 import (
 	"context"
-	goerrors "errors"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
-	"sync"
 
 	"golang.org/x/sys/unix"
 
-	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/sagernet/sing/common/control"
 	"github.com/vishvananda/netlink"
 	wgtun "golang.zx2c4.com/wireguard/tun"
@@ -27,23 +25,6 @@ type deviceNet struct {
 	linkAddrs []netlink.Addr
 	routes    []*netlink.Route
 	rules     []*netlink.Rule
-}
-
-var (
-	tableIndex int = 10230
-	mu         sync.Mutex
-)
-
-func allocateIPv6TableIndex() int {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if tableIndex > 10230 {
-		errors.LogInfo(context.Background(), "allocate new ipv6 table index: ", tableIndex)
-	}
-	currentIndex := tableIndex
-	tableIndex++
-	return currentIndex
 }
 
 func newDeviceNet(interfaceName string) *deviceNet {
@@ -87,7 +68,7 @@ func (d *deviceNet) Close() (err error) {
 	if len(errs) == 0 {
 		return nil
 	}
-	return goerrors.Join(errs...)
+	return errors.Join(errs...)
 }
 
 func createKernelTun(localAddresses []netip.Addr, mtu int, handler promiscuousModeHandler) (t Tunnel, err error) {
@@ -157,7 +138,7 @@ func createKernelTun(localAddresses []netip.Addr, mtu int, handler promiscuousMo
 		}
 	}
 
-	ipv6TableIndex := allocateIPv6TableIndex()
+	ipv6TableIndex := 1023
 	if v6 != nil {
 		r := &netlink.Route{Table: ipv6TableIndex}
 		for {
@@ -219,9 +200,6 @@ func createKernelTun(localAddresses []netip.Addr, mtu int, handler promiscuousMo
 		r := netlink.NewRule()
 		r.Table, r.Family, r.Src = ipv6TableIndex, unix.AF_INET6, addr.IPNet
 		out.rules = append(out.rules, r)
-		r = netlink.NewRule()
-		r.Table, r.Family, r.OifName = ipv6TableIndex, unix.AF_INET6, n
-		out.rules = append(out.rules, r)
 	}
 
 	for _, addr := range out.linkAddrs {
@@ -250,15 +228,10 @@ func createKernelTun(localAddresses []netip.Addr, mtu int, handler promiscuousMo
 	return out, nil
 }
 
-func KernelTunSupported() (bool, error) {
-	var hdr unix.CapUserHeader
-	hdr.Version = unix.LINUX_CAPABILITY_VERSION_3
-	hdr.Pid = 0 // 0 means current process
+func KernelTunSupported() bool {
+	// run a superuser permission check to check
+	// if the current user has the sufficient permission
+	// to create a tun device.
 
-	var data unix.CapUserData
-	if err := unix.Capget(&hdr, &data); err != nil {
-		return false, fmt.Errorf("failed to get capabilities: %v", err)
-	}
-
-	return (data.Effective & (1 << unix.CAP_NET_ADMIN)) != 0, nil
+	return unix.Geteuid() == 0 // 0 means root
 }

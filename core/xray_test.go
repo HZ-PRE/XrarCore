@@ -30,7 +30,7 @@ func TestXrayDependency(t *testing.T) {
 			t.Error("expected dns client fulfilled, but actually nil")
 		}
 		wait <- true
-	}, false)
+	})
 	instance.AddFeature(localdns.New())
 	<-wait
 }
@@ -54,22 +54,28 @@ func TestXrayClose(t *testing.T) {
 					Listen: net.NewIPOrDomain(net.LocalHostIP),
 				}),
 				ProxySettings: serial.ToTypedMessage(&dokodemo.Config{
-					Address:  net.NewIPOrDomain(net.LocalHostIP),
-					Port:     uint32(0),
-					Networks: []net.Network{net.Network_TCP},
+					Address: net.NewIPOrDomain(net.LocalHostIP),
+					Port:    uint32(0),
+					NetworkList: &net.NetworkList{
+						Network: []net.Network{net.Network_TCP},
+					},
 				}),
 			},
 		},
 		Outbound: []*OutboundHandlerConfig{
 			{
 				ProxySettings: serial.ToTypedMessage(&outbound.Config{
-					Receiver: &protocol.ServerEndpoint{
-						Address: net.NewIPOrDomain(net.LocalHostIP),
-						Port:    uint32(0),
-						User: &protocol.User{
-							Account: serial.ToTypedMessage(&vmess.Account{
-								Id: userID.String(),
-							}),
+					Receiver: []*protocol.ServerEndpoint{
+						{
+							Address: net.NewIPOrDomain(net.LocalHostIP),
+							Port:    uint32(0),
+							User: []*protocol.User{
+								{
+									Account: serial.ToTypedMessage(&vmess.Account{
+										Id: userID.String(),
+									}),
+								},
+							},
 						},
 					},
 				}),

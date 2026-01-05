@@ -7,7 +7,17 @@ option java_package = "com.xray.transport.internet";
 option java_multiple_files = true;
 
 import "common/serial/typed_message.proto";
-import "common/net/address.proto";
+
+enum TransportProtocol {
+  TCP = 0;
+  UDP = 1;
+  MKCP = 2;
+  WebSocket = 3;
+  HTTP = 4;
+  DomainSocket = 5;
+  HTTPUpgrade = 6;
+  SplitHTTP = 7;
+}
 
 enum DomainStrategy {
   AS_IS = 0;
@@ -23,27 +33,21 @@ enum DomainStrategy {
   FORCE_IP64 = 10;
 }
 
-enum AddressPortStrategy {
-  None = 0;
-  SrvPortOnly = 1;
-  SrvAddressOnly = 2;
-  SrvPortAndAddress = 3;
-  TxtPortOnly = 4;
-  TxtAddressOnly = 5;
-  TxtPortAndAddress = 6;
-}
-
 message TransportConfig {
-  // Transport protocol name.
+  // Type of network that this settings supports.
+  // Deprecated. Use the string form below.
+  TransportProtocol protocol = 1 [ deprecated = true ];
+
+  // Type of network that this settings supports.
   string protocol_name = 3;
 
-  // Specific transport protocol settings.
+  // Specific settings. Must be of the transports.
   xray.common.serial.TypedMessage settings = 2;
 }
 
 message StreamConfig {
-  xray.common.net.IPOrDomain address = 8;
-  uint32 port = 9;
+  // Effective network. Deprecated. Use the string form below.
+  TransportProtocol protocol = 1 [ deprecated = true ];
 
   // Effective network.
   string protocol_name = 5;
@@ -53,7 +57,7 @@ message StreamConfig {
   // Type of security. Must be a message name of the settings proto.
   string security_type = 3;
 
-  // Transport security settings. They can be either TLS or REALITY.
+  // Settings for transport security. For now the only choice is TLS.
   repeated xray.common.serial.TypedMessage security_settings = 4;
 
   SocketConfig socket_settings = 6;
@@ -65,12 +69,10 @@ message ProxyConfig {
 }
 
 message CustomSockopt {
-  string system = 1;
-  string network = 2;
-  string level = 3;
-  string opt = 4;
-  string value = 5;
-  string type = 6;
+  string level = 1;
+  string opt = 2;
+  string value = 3;
+  string type = 4;
 }
 
 // SocketConfig is options to be applied on network sockets.
@@ -115,7 +117,7 @@ message SocketConfig {
   
   string interface = 13;
 
-  bool v6only = 14;
+  bool   v6only = 14;
 
   int32 tcp_window_clamp = 15;
 
@@ -123,22 +125,9 @@ message SocketConfig {
 
   int32 tcp_max_seg = 17;
 
-  bool penetrate = 18;
+  bool tcp_no_delay = 18;
 
   bool tcp_mptcp = 19;
 
   repeated CustomSockopt customSockopt = 20;
-
-  AddressPortStrategy address_port_strategy = 21;
-
-  HappyEyeballsConfig happy_eyeballs = 22;
-
-  repeated string trusted_x_forwarded_for = 23;
-}
-
-message HappyEyeballsConfig {
-  bool prioritize_ipv6 = 1;
-  uint32 interleave = 2;
-  uint64 try_delayMs = 3;
-  uint32 max_concurrent_try = 4;
 }

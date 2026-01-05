@@ -27,8 +27,6 @@ type Stats struct {
 	UserUplink bool
 	// Whether or not to enable stat counter for user downlink traffic.
 	UserDownlink bool
-	// Whether or not to enable online map for user.
-	UserOnline bool
 }
 
 // Buffer contains settings for internal buffer.
@@ -125,7 +123,6 @@ func SessionDefault() Session {
 		Stats: Stats{
 			UserUplink:   false,
 			UserDownlink: false,
-			UserOnline:   false,
 		},
 		Buffer: defaultBufferPolicy(),
 	}

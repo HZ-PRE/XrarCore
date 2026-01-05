@@ -9,7 +9,6 @@ import (
 
 	"github.com/HZ-PRE/XrarCore/common/dice"
 	"github.com/HZ-PRE/XrarCore/common/errors"
-	"github.com/HZ-PRE/XrarCore/features/routing"
 )
 
 // HealthPingSettings holds settings for health Checker
@@ -19,13 +18,11 @@ type HealthPingSettings struct {
 	Interval      time.Duration `json:"interval"`
 	SamplingCount int           `json:"sampling"`
 	Timeout       time.Duration `json:"timeout"`
-	HttpMethod    string        `json:"httpMethod"`
 }
 
 // HealthPing is the health checker for balancers
 type HealthPing struct {
 	ctx         context.Context
-	dispatcher  routing.Dispatcher
 	access      sync.Mutex
 	ticker      *time.Ticker
 	tickerClose chan struct{}
@@ -35,24 +32,15 @@ type HealthPing struct {
 }
 
 // NewHealthPing creates a new HealthPing with settings
-func NewHealthPing(ctx context.Context, dispatcher routing.Dispatcher, config *HealthPingConfig) *HealthPing {
+func NewHealthPing(ctx context.Context, config *HealthPingConfig) *HealthPing {
 	settings := &HealthPingSettings{}
 	if config != nil {
-
-		var httpMethod string
-		if config.HttpMethod == "" {
-			httpMethod = "HEAD"
-		} else {
-			httpMethod = strings.TrimSpace(config.HttpMethod)
-		}
-
 		settings = &HealthPingSettings{
 			Connectivity:  strings.TrimSpace(config.Connectivity),
 			Destination:   strings.TrimSpace(config.Destination),
 			Interval:      time.Duration(config.Interval),
 			SamplingCount: int(config.SamplingCount),
 			Timeout:       time.Duration(config.Timeout),
-			HttpMethod:    httpMethod,
 		}
 	}
 	if settings.Destination == "" {
@@ -76,10 +64,9 @@ func NewHealthPing(ctx context.Context, dispatcher routing.Dispatcher, config *H
 		settings.Timeout = time.Duration(5) * time.Second
 	}
 	return &HealthPing{
-		ctx:        ctx,
-		dispatcher: dispatcher,
-		Settings:   settings,
-		Results:    nil,
+		ctx:      ctx,
+		Settings: settings,
+		Results:  nil,
 	}
 }
 
@@ -162,7 +149,6 @@ func (h *HealthPing) doCheck(tags []string, duration time.Duration, rounds int) 
 		handler := tag
 		client := newPingClient(
 			h.ctx,
-			h.dispatcher,
 			h.Settings.Destination,
 			h.Settings.Timeout,
 			handler,
@@ -170,11 +156,11 @@ func (h *HealthPing) doCheck(tags []string, duration time.Duration, rounds int) 
 		for i := 0; i < rounds; i++ {
 			delay := time.Duration(0)
 			if duration > 0 {
-				delay = time.Duration(dice.RollInt63n(int64(duration)))
+				delay = time.Duration(dice.Roll(int(duration)))
 			}
 			time.AfterFunc(delay, func() {
 				errors.LogDebug(h.ctx, "checking ", handler)
-				delay, err := client.MeasureDelay(h.Settings.HttpMethod)
+				delay, err := client.MeasureDelay()
 				if err == nil {
 					ch <- &rtt{
 						handler: handler,
@@ -261,7 +247,7 @@ func (h *HealthPing) checkConnectivity() bool {
 		h.Settings.Connectivity,
 		h.Settings.Timeout,
 	)
-	if _, err := tester.MeasureDelay(h.Settings.HttpMethod); err != nil {
+	if _, err := tester.MeasureDelay(); err != nil {
 		return false
 	}
 	return true

@@ -3,25 +3,21 @@ package splithttp
 import (
 	"context"
 	gotls "crypto/tls"
-	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/HZ-PRE/XrarCore/common"
 	"github.com/HZ-PRE/XrarCore/common/buf"
 	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/HZ-PRE/XrarCore/common/net"
-	"github.com/HZ-PRE/XrarCore/common/signal/done"
+	"github.com/HZ-PRE/XrarCore/common/signal/semaphore"
 	"github.com/HZ-PRE/XrarCore/common/uuid"
 	"github.com/HZ-PRE/XrarCore/transport/internet"
 	"github.com/HZ-PRE/XrarCore/transport/internet/browser_dialer"
-	"github.com/HZ-PRE/XrarCore/transport/internet/reality"
 	"github.com/HZ-PRE/XrarCore/transport/internet/stat"
 	"github.com/HZ-PRE/XrarCore/transport/internet/tls"
 	"github.com/HZ-PRE/XrarCore/transport/pipe"
@@ -36,72 +32,29 @@ type dialerConf struct {
 }
 
 var (
-	globalDialerMap    map[dialerConf]*XmuxManager
+	globalDialerMap    map[dialerConf]DialerClient
 	globalDialerAccess sync.Mutex
 )
 
-func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (DialerClient, *XmuxClient) {
-	realityConfig := reality.ConfigFromStreamSettings(streamSettings)
-
-	if browser_dialer.HasBrowserDialer() && realityConfig == nil {
-		return &BrowserDialerClient{transportConfig: streamSettings.ProtocolSettings.(*Config)}, nil
+func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) DialerClient {
+	if browser_dialer.HasBrowserDialer() {
+		return &BrowserDialerClient{}
 	}
 
 	globalDialerAccess.Lock()
 	defer globalDialerAccess.Unlock()
 
 	if globalDialerMap == nil {
-		globalDialerMap = make(map[dialerConf]*XmuxManager)
+		globalDialerMap = make(map[dialerConf]DialerClient)
 	}
 
-	key := dialerConf{dest, streamSettings}
-
-	xmuxManager, found := globalDialerMap[key]
-
-	if !found {
-		transportConfig := streamSettings.ProtocolSettings.(*Config)
-		var xmuxConfig XmuxConfig
-		if transportConfig.Xmux != nil {
-			xmuxConfig = *transportConfig.Xmux
-		}
-
-		xmuxManager = NewXmuxManager(xmuxConfig, func() XmuxConn {
-			return createHTTPClient(dest, streamSettings)
-		})
-		globalDialerMap[key] = xmuxManager
+	if client, found := globalDialerMap[dialerConf{dest, streamSettings}]; found {
+		return client
 	}
 
-	xmuxClient := xmuxManager.GetXmuxClient(ctx)
-	return xmuxClient.XmuxConn.(DialerClient), xmuxClient
-}
-
-func decideHTTPVersion(tlsConfig *tls.Config, realityConfig *reality.Config) string {
-	if realityConfig != nil {
-		return "2"
-	}
-	if tlsConfig == nil {
-		return "1.1"
-	}
-	if len(tlsConfig.NextProtocol) != 1 {
-		return "2"
-	}
-	if tlsConfig.NextProtocol[0] == "http/1.1" {
-		return "1.1"
-	}
-	if tlsConfig.NextProtocol[0] == "h3" {
-		return "3"
-	}
-	return "2"
-}
-
-func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStreamConfig) DialerClient {
 	tlsConfig := tls.ConfigFromStreamSettings(streamSettings)
-	realityConfig := reality.ConfigFromStreamSettings(streamSettings)
-
-	httpVersion := decideHTTPVersion(tlsConfig, realityConfig)
-	if httpVersion == "3" {
-		dest.Network = net.Network_UDP // better to keep this line
-	}
+	isH2 := tlsConfig != nil && !(len(tlsConfig.NextProtocol) == 1 && tlsConfig.NextProtocol[0] == "http/1.1")
+	isH3 := tlsConfig != nil && (len(tlsConfig.NextProtocol) == 1 && tlsConfig.NextProtocol[0] == "h3")
 
 	var gotlsConfig *gotls.Config
 
@@ -109,16 +62,10 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 		gotlsConfig = tlsConfig.GetTLSConfig(tls.WithDestination(dest))
 	}
 
-	transportConfig := streamSettings.ProtocolSettings.(*Config)
-
 	dialContext := func(ctxInner context.Context) (net.Conn, error) {
 		conn, err := internet.DialSystem(ctxInner, dest, streamSettings.SocketSettings)
 		if err != nil {
 			return nil, err
-		}
-
-		if realityConfig != nil {
-			return reality.UClient(conn, realityConfig, ctxInner, dest)
 		}
 
 		if gotlsConfig != nil {
@@ -135,39 +82,27 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 		return conn, nil
 	}
 
-	var keepAlivePeriod time.Duration
-	if streamSettings.ProtocolSettings.(*Config).Xmux != nil {
-		keepAlivePeriod = time.Duration(streamSettings.ProtocolSettings.(*Config).Xmux.HKeepAlivePeriod) * time.Second
-	}
+	var downloadTransport http.RoundTripper
+	var uploadTransport http.RoundTripper
 
-	var transport http.RoundTripper
-
-	if httpVersion == "3" {
-		if keepAlivePeriod == 0 {
-			keepAlivePeriod = net.QuicgoH3KeepAlivePeriod
-		}
-		if keepAlivePeriod < 0 {
-			keepAlivePeriod = 0
-		}
+	if isH3 {
+		dest.Network = net.Network_UDP
 		quicConfig := &quic.Config{
-			MaxIdleTimeout: net.ConnIdleTimeout,
-
-			// these two are defaults of quic-go/http3. the default of quic-go (no
-			// http3) is different, so it is hardcoded here for clarity.
-			// https://github.com/quic-go/quic-go/blob/b8ea5c798155950fb5bbfdd06cad1939c9355878/http3/client.go#L36-L39
-			MaxIncomingStreams: -1,
-			KeepAlivePeriod:    keepAlivePeriod,
+			HandshakeIdleTimeout: 10 * time.Second,
+			MaxIdleTimeout:       90 * time.Second,
+			KeepAlivePeriod:      3 * time.Second,
+			Allow0RTT:            true,
 		}
-		transport = &http3.Transport{
-			QUICConfig:      quicConfig,
+		roundTripper := &http3.RoundTripper{
 			TLSClientConfig: gotlsConfig,
-			Dial: func(ctx context.Context, addr string, tlsCfg *gotls.Config, cfg *quic.Config) (*quic.Conn, error) {
+			QUICConfig:      quicConfig,
+			Dial: func(ctx context.Context, addr string, tlsCfg *gotls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
 				conn, err := internet.DialSystem(ctx, dest, streamSettings.SocketSettings)
 				if err != nil {
 					return nil, err
 				}
 
-				var udpConn net.PacketConn
+				var udpConn *net.UDPConn
 				var udpAddr *net.UDPAddr
 
 				switch c := conn.(type) {
@@ -188,55 +123,54 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 						return nil, err
 					}
 				default:
-					udpConn = &internet.FakePacketConn{Conn: c}
-					udpAddr, err = net.ResolveUDPAddr("udp", c.RemoteAddr().String())
-					if err != nil {
-						return nil, err
-					}
+					return nil, errors.New("unsupported connection type: %T", conn)
 				}
 
 				return quic.DialEarly(ctx, udpConn, udpAddr, tlsCfg, cfg)
 			},
 		}
-	} else if httpVersion == "2" {
-		if keepAlivePeriod == 0 {
-			keepAlivePeriod = net.ChromeH2KeepAlivePeriod
-		}
-		if keepAlivePeriod < 0 {
-			keepAlivePeriod = 0
-		}
-		transport = &http2.Transport{
+		downloadTransport = roundTripper
+		uploadTransport = roundTripper
+	} else if isH2 {
+		downloadTransport = &http2.Transport{
 			DialTLSContext: func(ctxInner context.Context, network string, addr string, cfg *gotls.Config) (net.Conn, error) {
 				return dialContext(ctxInner)
 			},
-			IdleConnTimeout: net.ConnIdleTimeout,
-			ReadIdleTimeout: keepAlivePeriod,
+			IdleConnTimeout: 90 * time.Second,
 		}
+		uploadTransport = downloadTransport
 	} else {
 		httpDialContext := func(ctxInner context.Context, network string, addr string) (net.Conn, error) {
 			return dialContext(ctxInner)
 		}
 
-		transport = &http.Transport{
+		downloadTransport = &http.Transport{
 			DialTLSContext:  httpDialContext,
 			DialContext:     httpDialContext,
-			IdleConnTimeout: net.ConnIdleTimeout,
-			// chunked transfer download with KeepAlives is buggy with
+			IdleConnTimeout: 90 * time.Second,
+			// chunked transfer download with keepalives is buggy with
 			// http.Client and our custom dial context.
 			DisableKeepAlives: true,
 		}
+		// we use uploadRawPool for that
+		uploadTransport = nil
 	}
 
 	client := &DefaultDialerClient{
-		transportConfig: transportConfig,
-		client: &http.Client{
-			Transport: transport,
+		transportConfig: streamSettings.ProtocolSettings.(*Config),
+		download: &http.Client{
+			Transport: downloadTransport,
 		},
-		httpVersion:    httpVersion,
+		upload: &http.Client{
+			Transport: uploadTransport,
+		},
+		isH2:           isH2,
+		isH3:           isH3,
 		uploadRawPool:  &sync.Pool{},
 		dialUploadConn: dialContext,
 	}
 
+	globalDialerMap[dialerConf{dest, streamSettings}] = client
 	return client
 }
 
@@ -245,260 +179,105 @@ func init() {
 }
 
 func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (stat.Connection, error) {
-	tlsConfig := tls.ConfigFromStreamSettings(streamSettings)
-	realityConfig := reality.ConfigFromStreamSettings(streamSettings)
+	errors.LogInfo(ctx, "dialing splithttp to ", dest)
 
-	httpVersion := decideHTTPVersion(tlsConfig, realityConfig)
-	if httpVersion == "3" {
-		dest.Network = net.Network_UDP
-	}
-
-	transportConfiguration := streamSettings.ProtocolSettings.(*Config)
 	var requestURL url.URL
 
-	if tlsConfig != nil || realityConfig != nil {
+	transportConfiguration := streamSettings.ProtocolSettings.(*Config)
+	tlsConfig := tls.ConfigFromStreamSettings(streamSettings)
+
+	maxConcurrentUploads := transportConfiguration.GetNormalizedMaxConcurrentUploads()
+	maxUploadSize := transportConfiguration.GetNormalizedMaxUploadSize()
+
+	if tlsConfig != nil {
 		requestURL.Scheme = "https"
 	} else {
 		requestURL.Scheme = "http"
 	}
 	requestURL.Host = transportConfiguration.Host
-	if requestURL.Host == "" && tlsConfig != nil {
-		requestURL.Host = tlsConfig.ServerName
-	}
-	if requestURL.Host == "" && realityConfig != nil {
-		requestURL.Host = realityConfig.ServerName
-	}
 	if requestURL.Host == "" {
-		requestURL.Host = dest.Address.String()
+		requestURL.Host = dest.NetAddr()
 	}
+	requestURL.Path = transportConfiguration.GetNormalizedPath()
+
+	httpClient := getHTTPClient(ctx, dest, streamSettings)
 
 	sessionIdUuid := uuid.New()
-	requestURL.Path = transportConfiguration.GetNormalizedPath() + sessionIdUuid.String()
-	requestURL.RawQuery = transportConfiguration.GetNormalizedQuery()
+	sessionId := sessionIdUuid.String()
+	baseURL := requestURL.String() + sessionId
 
-	httpClient, xmuxClient := getHTTPClient(ctx, dest, streamSettings)
-
-	mode := transportConfiguration.Mode
-	if mode == "" || mode == "auto" {
-		mode = "packet-up"
-		if realityConfig != nil {
-			mode = "stream-one"
-			if transportConfiguration.DownloadSettings != nil {
-				mode = "stream-up"
-			}
-		}
-	}
-
-	errors.LogInfo(ctx, fmt.Sprintf("XHTTP is dialing to %s, mode %s, HTTP version %s, host %s", dest, mode, httpVersion, requestURL.Host))
-
-	requestURL2 := requestURL
-	httpClient2 := httpClient
-	xmuxClient2 := xmuxClient
-	if transportConfiguration.DownloadSettings != nil {
-		globalDialerAccess.Lock()
-		if streamSettings.DownloadSettings == nil {
-			streamSettings.DownloadSettings = common.Must2(internet.ToMemoryStreamConfig(transportConfiguration.DownloadSettings))
-			if streamSettings.SocketSettings != nil && streamSettings.SocketSettings.Penetrate {
-				streamSettings.DownloadSettings.SocketSettings = streamSettings.SocketSettings
-			}
-		}
-		globalDialerAccess.Unlock()
-		memory2 := streamSettings.DownloadSettings
-		dest2 := *memory2.Destination // just panic
-		tlsConfig2 := tls.ConfigFromStreamSettings(memory2)
-		realityConfig2 := reality.ConfigFromStreamSettings(memory2)
-		httpVersion2 := decideHTTPVersion(tlsConfig2, realityConfig2)
-		if httpVersion2 == "3" {
-			dest2.Network = net.Network_UDP
-		}
-		if tlsConfig2 != nil || realityConfig2 != nil {
-			requestURL2.Scheme = "https"
-		} else {
-			requestURL2.Scheme = "http"
-		}
-		config2 := memory2.ProtocolSettings.(*Config)
-		requestURL2.Host = config2.Host
-		if requestURL2.Host == "" && tlsConfig2 != nil {
-			requestURL2.Host = tlsConfig2.ServerName
-		}
-		if requestURL2.Host == "" && realityConfig2 != nil {
-			requestURL2.Host = realityConfig2.ServerName
-		}
-		if requestURL2.Host == "" {
-			requestURL2.Host = dest2.Address.String()
-		}
-		requestURL2.Path = config2.GetNormalizedPath() + sessionIdUuid.String()
-		requestURL2.RawQuery = config2.GetNormalizedQuery()
-		httpClient2, xmuxClient2 = getHTTPClient(ctx, dest2, memory2)
-		errors.LogInfo(ctx, fmt.Sprintf("XHTTP is downloading from %s, mode %s, HTTP version %s, host %s", dest2, "stream-down", httpVersion2, requestURL2.Host))
-	}
-
-	if xmuxClient != nil {
-		xmuxClient.OpenUsage.Add(1)
-	}
-	if xmuxClient2 != nil && xmuxClient2 != xmuxClient {
-		xmuxClient2.OpenUsage.Add(1)
-	}
-	var closed atomic.Int32
-
-	reader, writer := io.Pipe()
-	conn := splitConn{
-		writer: writer,
-		onClose: func() {
-			if closed.Add(1) > 1 {
-				return
-			}
-			if xmuxClient != nil {
-				xmuxClient.OpenUsage.Add(-1)
-			}
-			if xmuxClient2 != nil && xmuxClient2 != xmuxClient {
-				xmuxClient2.OpenUsage.Add(-1)
-			}
-		},
-	}
-
-	var err error
-	if mode == "stream-one" {
-		requestURL.Path = transportConfiguration.GetNormalizedPath()
-		if xmuxClient != nil {
-			xmuxClient.LeftRequests.Add(-1)
-		}
-		conn.reader, conn.remoteAddr, conn.localAddr, err = httpClient.OpenStream(ctx, requestURL.String(), reader, false)
-		if err != nil { // browser dialer only
-			return nil, err
-		}
-		return stat.Connection(&conn), nil
-	} else { // stream-down
-		if xmuxClient2 != nil {
-			xmuxClient2.LeftRequests.Add(-1)
-		}
-		conn.reader, conn.remoteAddr, conn.localAddr, err = httpClient2.OpenStream(ctx, requestURL2.String(), nil, false)
-		if err != nil { // browser dialer only
-			return nil, err
-		}
-	}
-	if mode == "stream-up" {
-		if xmuxClient != nil {
-			xmuxClient.LeftRequests.Add(-1)
-		}
-		_, _, _, err = httpClient.OpenStream(ctx, requestURL.String(), reader, true)
-		if err != nil { // browser dialer only
-			return nil, err
-		}
-		return stat.Connection(&conn), nil
-	}
-
-	scMaxEachPostBytes := transportConfiguration.GetNormalizedScMaxEachPostBytes()
-	scMinPostsIntervalMs := transportConfiguration.GetNormalizedScMinPostsIntervalMs()
-
-	if scMaxEachPostBytes.From <= buf.Size {
-		panic("`scMaxEachPostBytes` should be bigger than " + strconv.Itoa(buf.Size))
-	}
-
-	maxUploadSize := scMaxEachPostBytes.rand()
-	// WithSizeLimit(0) will still allow single bytes to pass, and a lot of
-	// code relies on this behavior. Subtract 1 so that together with
-	// uploadWriter wrapper, exact size limits can be enforced
-	// uploadPipeReader, uploadPipeWriter := pipe.New(pipe.WithSizeLimit(maxUploadSize - 1))
-	uploadPipeReader, uploadPipeWriter := pipe.New(pipe.WithSizeLimit(maxUploadSize - buf.Size))
-
-	conn.writer = uploadWriter{
-		uploadPipeWriter,
-		maxUploadSize,
-	}
+	uploadPipeReader, uploadPipeWriter := pipe.New(pipe.WithSizeLimit(maxUploadSize))
 
 	go func() {
-		var seq int64
-		var lastWrite time.Time
+		requestsLimiter := semaphore.New(int(maxConcurrentUploads))
+		var requestCounter int64
 
+		// by offloading the uploads into a buffered pipe, multiple conn.Write
+		// calls get automatically batched together into larger POST requests.
+		// without batching, bandwidth is extremely limited.
 		for {
-			wroteRequest := done.New()
-
-			ctx := httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-				WroteRequest: func(httptrace.WroteRequestInfo) {
-					wroteRequest.Close()
-				},
-			})
-
-			// this intentionally makes a shallow-copy of the struct so we
-			// can reassign Path (potentially concurrently)
-			url := requestURL
-			url.Path += "/" + strconv.FormatInt(seq, 10)
-
-			seq += 1
-
-			if scMinPostsIntervalMs.From > 0 {
-				time.Sleep(time.Duration(scMinPostsIntervalMs.rand())*time.Millisecond - time.Since(lastWrite))
-			}
-
-			// by offloading the uploads into a buffered pipe, multiple conn.Write
-			// calls get automatically batched together into larger POST requests.
-			// without batching, bandwidth is extremely limited.
 			chunk, err := uploadPipeReader.ReadMultiBuffer()
 			if err != nil {
 				break
 			}
 
-			lastWrite = time.Now()
+			<-requestsLimiter.Wait()
 
-			if xmuxClient != nil && (xmuxClient.LeftRequests.Add(-1) <= 0 ||
-				(xmuxClient.UnreusableAt != time.Time{} && lastWrite.After(xmuxClient.UnreusableAt))) {
-				httpClient, xmuxClient = getHTTPClient(ctx, dest, streamSettings)
-			}
+			seq := requestCounter
+			requestCounter += 1
 
 			go func() {
-				err := httpClient.PostPacket(
-					ctx,
-					url.String(),
+				defer requestsLimiter.Signal()
+
+				err := httpClient.SendUploadRequest(
+					context.WithoutCancel(ctx),
+					baseURL+"/"+strconv.FormatInt(seq, 10),
 					&buf.MultiBufferContainer{MultiBuffer: chunk},
 					int64(chunk.Len()),
 				)
-				wroteRequest.Close()
+
 				if err != nil {
 					errors.LogInfoInner(ctx, err, "failed to send upload")
 					uploadPipeReader.Interrupt()
 				}
 			}()
 
-			if _, ok := httpClient.(*DefaultDialerClient); ok {
-				<-wroteRequest.Wait()
-			}
 		}
 	}()
 
-	return stat.Connection(&conn), nil
-}
-
-// A wrapper around pipe that ensures the size limit is exactly honored.
-//
-// The MultiBuffer pipe accepts any single WriteMultiBuffer call even if that
-// single MultiBuffer exceeds the size limit, and then starts blocking on the
-// next WriteMultiBuffer call. This means that ReadMultiBuffer can return more
-// bytes than the size limit. We work around this by splitting a potentially
-// too large write up into multiple.
-type uploadWriter struct {
-	*pipe.Writer
-	maxLen int32
-}
-
-func (w uploadWriter) Write(b []byte) (int, error) {
-	/*
-		capacity := int(w.maxLen - w.Len())
-		if capacity > 0 && capacity < len(b) {
-			b = b[:capacity]
-		}
-	*/
-
-	buffer := buf.MultiBufferContainer{}
-	common.Must2(buffer.Write(b))
-
-	var writed int
-	for _, buff := range buffer.MultiBuffer {
-		err := w.WriteMultiBuffer(buf.MultiBuffer{buff})
-		if err != nil {
-			return writed, err
-		}
-		writed += int(buff.Len())
+	lazyRawDownload, remoteAddr, localAddr, err := httpClient.OpenDownload(context.WithoutCancel(ctx), baseURL)
+	if err != nil {
+		return nil, err
 	}
-	return writed, nil
+
+	lazyDownload := &LazyReader{
+		CreateReader: func() (io.ReadCloser, error) {
+			// skip "ooooooooook" response
+			trashHeader := []byte{0}
+			for {
+				_, err := io.ReadFull(lazyRawDownload, trashHeader)
+				if err != nil {
+					return nil, errors.New("failed to read initial response").Base(err)
+				}
+				if trashHeader[0] == 'k' {
+					break
+				}
+			}
+
+			return lazyRawDownload, nil
+		},
+	}
+
+	// necessary in order to send larger chunks in upload
+	bufferedUploadPipeWriter := buf.NewBufferedWriter(uploadPipeWriter)
+	bufferedUploadPipeWriter.SetBuffered(false)
+
+	conn := splitConn{
+		writer:     bufferedUploadPipeWriter,
+		reader:     lazyDownload,
+		remoteAddr: remoteAddr,
+		localAddr:  localAddr,
+	}
+
+	return stat.Connection(&conn), nil
 }

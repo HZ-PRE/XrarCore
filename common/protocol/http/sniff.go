@@ -2,13 +2,11 @@ package http
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"strings"
 
 	"github.com/HZ-PRE/XrarCore/common"
 	"github.com/HZ-PRE/XrarCore/common/net"
-	"github.com/HZ-PRE/XrarCore/common/session"
 )
 
 type version byte
@@ -58,14 +56,7 @@ func beginWithHTTPMethod(b []byte) error {
 	return errNotHTTPMethod
 }
 
-func SniffHTTP(b []byte, c context.Context) (*SniffHeader, error) {
-	content := session.ContentFromContext(c)
-	ShouldSniffAttr := true
-	// If content.Attributes have information, that means it comes from HTTP inbound PlainHTTP mode.
-	// It will set attributes, so skip it.
-	if content == nil || len(content.Attributes) != 0 {
-		ShouldSniffAttr = false
-	}
+func SniffHTTP(b []byte) (*SniffHeader, error) {
 	if err := beginWithHTTPMethod(b); err != nil {
 		return nil, err
 	}
@@ -85,27 +76,13 @@ func SniffHTTP(b []byte, c context.Context) (*SniffHeader, error) {
 			continue
 		}
 		key := strings.ToLower(string(parts[0]))
-		value := string(bytes.TrimSpace(parts[1]))
-		if ShouldSniffAttr {
-			content.SetAttribute(key, value) // Put header in attribute
-		}
 		if key == "host" {
-			rawHost := strings.ToLower(value)
+			rawHost := strings.ToLower(string(bytes.TrimSpace(parts[1])))
 			dest, err := ParseHost(rawHost, net.Port(80))
 			if err != nil {
 				return nil, err
 			}
 			sh.host = dest.Address.String()
-		}
-	}
-	// Parse request line
-	// Request line is like this
-	// "GET /homo/114514 HTTP/1.1"
-	if len(headers) > 0 && ShouldSniffAttr {
-		RequestLineParts := bytes.Split(headers[0], []byte{' '})
-		if len(RequestLineParts) == 3 {
-			content.SetAttribute(":method", string(RequestLineParts[0]))
-			content.SetAttribute(":path", string(RequestLineParts[1]))
 		}
 	}
 

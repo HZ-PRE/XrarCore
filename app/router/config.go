@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/HZ-PRE/XrarCore/common/errors"
+	"github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/features/outbound"
 	"github.com/HZ-PRE/XrarCore/features/routing"
 )
@@ -32,36 +33,80 @@ func (r *Rule) Apply(ctx routing.Context) bool {
 func (rr *RoutingRule) BuildCondition() (Condition, error) {
 	conds := NewConditionChan()
 
-	if len(rr.InboundTag) > 0 {
-		conds.Add(NewInboundTagMatcher(rr.InboundTag))
-	}
-
-	if len(rr.Networks) > 0 {
-		conds.Add(NewNetworkMatcher(rr.Networks))
-	}
-
-	if len(rr.Protocol) > 0 {
-		conds.Add(NewProtocolMatcher(rr.Protocol))
-	}
-
-	if rr.PortList != nil {
-		conds.Add(NewPortMatcher(rr.PortList, MatcherAsType_Target))
-	}
-
-	if rr.SourcePortList != nil {
-		conds.Add(NewPortMatcher(rr.SourcePortList, MatcherAsType_Source))
-	}
-
-	if rr.LocalPortList != nil {
-		conds.Add(NewPortMatcher(rr.LocalPortList, MatcherAsType_Local))
-	}
-
-	if rr.VlessRouteList != nil {
-		conds.Add(NewPortMatcher(rr.VlessRouteList, MatcherAsType_VlessRoute))
+	if len(rr.Domain) > 0 {
+		switch rr.DomainMatcher {
+		case "linear":
+			matcher, err := NewDomainMatcher(rr.Domain)
+			if err != nil {
+				return nil, errors.New("failed to build domain condition").Base(err)
+			}
+			conds.Add(matcher)
+		case "mph", "hybrid":
+			fallthrough
+		default:
+			matcher, err := NewMphMatcherGroup(rr.Domain)
+			if err != nil {
+				return nil, errors.New("failed to build domain condition with MphDomainMatcher").Base(err)
+			}
+			errors.LogDebug(context.Background(), "MphDomainMatcher is enabled for ", len(rr.Domain), " domain rule(s)")
+			conds.Add(matcher)
+		}
 	}
 
 	if len(rr.UserEmail) > 0 {
 		conds.Add(NewUserMatcher(rr.UserEmail))
+	}
+
+	if len(rr.InboundTag) > 0 {
+		conds.Add(NewInboundTagMatcher(rr.InboundTag))
+	}
+
+	if rr.PortList != nil {
+		conds.Add(NewPortMatcher(rr.PortList, false))
+	} else if rr.PortRange != nil {
+		conds.Add(NewPortMatcher(&net.PortList{Range: []*net.PortRange{rr.PortRange}}, false))
+	}
+
+	if rr.SourcePortList != nil {
+		conds.Add(NewPortMatcher(rr.SourcePortList, true))
+	}
+
+	if len(rr.Networks) > 0 {
+		conds.Add(NewNetworkMatcher(rr.Networks))
+	} else if rr.NetworkList != nil {
+		conds.Add(NewNetworkMatcher(rr.NetworkList.Network))
+	}
+
+	if len(rr.Geoip) > 0 {
+		cond, err := NewMultiGeoIPMatcher(rr.Geoip, false)
+		if err != nil {
+			return nil, err
+		}
+		conds.Add(cond)
+	} else if len(rr.Cidr) > 0 {
+		cond, err := NewMultiGeoIPMatcher([]*GeoIP{{Cidr: rr.Cidr}}, false)
+		if err != nil {
+			return nil, err
+		}
+		conds.Add(cond)
+	}
+
+	if len(rr.SourceGeoip) > 0 {
+		cond, err := NewMultiGeoIPMatcher(rr.SourceGeoip, true)
+		if err != nil {
+			return nil, err
+		}
+		conds.Add(cond)
+	} else if len(rr.SourceCidr) > 0 {
+		cond, err := NewMultiGeoIPMatcher([]*GeoIP{{Cidr: rr.SourceCidr}}, true)
+		if err != nil {
+			return nil, err
+		}
+		conds.Add(cond)
+	}
+
+	if len(rr.Protocol) > 0 {
+		conds.Add(NewProtocolMatcher(rr.Protocol))
 	}
 
 	if len(rr.Attributes) > 0 {
@@ -70,40 +115,6 @@ func (rr *RoutingRule) BuildCondition() (Condition, error) {
 			configuredKeys[strings.ToLower(key)] = regexp.MustCompile(value)
 		}
 		conds.Add(&AttributeMatcher{configuredKeys})
-	}
-
-	if len(rr.Geoip) > 0 {
-		cond, err := NewIPMatcher(rr.Geoip, MatcherAsType_Target)
-		if err != nil {
-			return nil, err
-		}
-		conds.Add(cond)
-	}
-
-	if len(rr.SourceGeoip) > 0 {
-		cond, err := NewIPMatcher(rr.SourceGeoip, MatcherAsType_Source)
-		if err != nil {
-			return nil, err
-		}
-		conds.Add(cond)
-	}
-
-	if len(rr.LocalGeoip) > 0 {
-		cond, err := NewIPMatcher(rr.LocalGeoip, MatcherAsType_Local)
-		if err != nil {
-			return nil, err
-		}
-		conds.Add(cond)
-		errors.LogWarning(context.Background(), "Due to some limitations, in UDP connections, localIP is always equal to listen interface IP, so \"localIP\" rule condition does not work properly on UDP inbound connections that listen on all interfaces")
-	}
-
-	if len(rr.Domain) > 0 {
-		matcher, err := NewMphMatcherGroup(rr.Domain)
-		if err != nil {
-			return nil, errors.New("failed to build domain condition with MphDomainMatcher").Base(err)
-		}
-		errors.LogDebug(context.Background(), "MphDomainMatcher is enabled for ", len(rr.Domain), " domain rule(s)")
-		conds.Add(matcher)
 	}
 
 	if conds.Len() == 0 {

@@ -3,6 +3,7 @@ package wireguard
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"runtime"
 	"strconv"
@@ -12,7 +13,7 @@ import (
 
 	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/HZ-PRE/XrarCore/common/log"
-	"github.com/HZ-PRE/XrarCore/common/net"
+	xnet "github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/proxy/wireguard/gvisortun"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -27,7 +28,7 @@ import (
 
 type tunCreator func(localAddresses []netip.Addr, mtu int, handler promiscuousModeHandler) (Tunnel, error)
 
-type promiscuousModeHandler func(dest net.Destination, conn net.Conn)
+type promiscuousModeHandler func(dest xnet.Destination, conn net.Conn)
 
 type Tunnel interface {
 	BuildDevice(ipc string, bind conn.Bind) error
@@ -168,7 +169,7 @@ func createGVisorTun(localAddresses []netip.Addr, mtu int, handler promiscuousMo
 				ep.SocketOptions().SetKeepAlive(true)
 
 				// local address is actually destination
-				handler(net.TCPDestination(net.IPAddress(id.LocalAddress.AsSlice()), net.Port(id.LocalPort)), gonet.NewTCPConn(&wq, ep))
+				handler(xnet.TCPDestination(xnet.IPAddress(id.LocalAddress.AsSlice()), xnet.Port(id.LocalPort)), gonet.NewTCPConn(&wq, ep))
 			}(r)
 		})
 		stack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
@@ -193,7 +194,7 @@ func createGVisorTun(localAddresses []netip.Addr, mtu int, handler promiscuousMo
 					Timeout: 15 * time.Second,
 				})
 
-				handler(net.UDPDestination(net.IPAddress(id.LocalAddress.AsSlice()), net.Port(id.LocalPort)), gonet.NewUDPConn(&wq, ep))
+				handler(xnet.UDPDestination(xnet.IPAddress(id.LocalAddress.AsSlice()), xnet.Port(id.LocalPort)), gonet.NewUDPConn(stack, &wq, ep))
 			}(r)
 		})
 		stack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)

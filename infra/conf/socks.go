@@ -2,6 +2,7 @@ package conf
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/HZ-PRE/XrarCore/common/protocol"
@@ -32,6 +33,7 @@ type SocksServerConfig struct {
 	Accounts   []*SocksAccount `json:"accounts"`
 	UDP        bool            `json:"udp"`
 	Host       *Address        `json:"ip"`
+	Timeout    uint32          `json:"timeout"`
 	UserLevel  uint32          `json:"userLevel"`
 }
 
@@ -59,6 +61,7 @@ func (v *SocksServerConfig) Build() (proto.Message, error) {
 		config.Address = v.Host.Build()
 	}
 
+	config.Timeout = v.Timeout
 	config.UserLevel = v.UserLevel
 	return config, nil
 }
@@ -70,64 +73,44 @@ type SocksRemoteConfig struct {
 }
 
 type SocksClientConfig struct {
-	Address  *Address             `json:"address"`
-	Port     uint16               `json:"port"`
-	Level    uint32               `json:"level"`
-	Email    string               `json:"email"`
-	Username string               `json:"user"`
-	Password string               `json:"pass"`
-	Servers  []*SocksRemoteConfig `json:"servers"`
+	Servers []*SocksRemoteConfig `json:"servers"`
+	Version string               `json:"version"`
 }
 
 func (v *SocksClientConfig) Build() (proto.Message, error) {
 	config := new(socks.ClientConfig)
-	if v.Address != nil {
-		v.Servers = []*SocksRemoteConfig{
-			{
-				Address: v.Address,
-				Port:    v.Port,
-			},
-		}
-		if len(v.Username) > 0 {
-			v.Servers[0].Users = []json.RawMessage{{}}
-		}
+	config.Server = make([]*protocol.ServerEndpoint, len(v.Servers))
+	switch strings.ToLower(v.Version) {
+	case "4":
+		config.Version = socks.Version_SOCKS4
+	case "4a":
+		config.Version = socks.Version_SOCKS4A
+	case "", "5":
+		config.Version = socks.Version_SOCKS5
+	default:
+		return nil, errors.New("failed to parse socks server version: ", v.Version).AtError()
 	}
-	if len(v.Servers) != 1 {
-		return nil, errors.New(`SOCKS settings: "servers" should have one and only one member. Multiple endpoints in "servers" should use multiple SOCKS outbounds and routing balancer instead`)
-	}
-	for _, serverConfig := range v.Servers {
-		if len(serverConfig.Users) > 1 {
-			return nil, errors.New(`SOCKS servers: "users" should have one member at most. Multiple members in "users" should use multiple SOCKS outbounds and routing balancer instead`)
-		}
+	for idx, serverConfig := range v.Servers {
 		server := &protocol.ServerEndpoint{
 			Address: serverConfig.Address.Build(),
 			Port:    uint32(serverConfig.Port),
 		}
 		for _, rawUser := range serverConfig.Users {
 			user := new(protocol.User)
-			if v.Address != nil {
-				user.Level = v.Level
-				user.Email = v.Email
-			} else {
-				if err := json.Unmarshal(rawUser, user); err != nil {
-					return nil, errors.New("failed to parse Socks user").Base(err).AtError()
-				}
+			if err := json.Unmarshal(rawUser, user); err != nil {
+				return nil, errors.New("failed to parse Socks user").Base(err).AtError()
 			}
 			account := new(SocksAccount)
-			if v.Address != nil {
-				account.Username = v.Username
-				account.Password = v.Password
-			} else {
-				if err := json.Unmarshal(rawUser, account); err != nil {
-					return nil, errors.New("failed to parse socks account").Base(err).AtError()
-				}
+			if err := json.Unmarshal(rawUser, account); err != nil {
+				return nil, errors.New("failed to parse socks account").Base(err).AtError()
+			}
+			if config.Version != socks.Version_SOCKS5 && account.Password != "" {
+				return nil, errors.New("password is only supported in socks5").AtError()
 			}
 			user.Account = serial.ToTypedMessage(account.Build())
-			server.User = user
-			break
+			server.User = append(server.User, user)
 		}
-		config.Server = server
-		break
+		config.Server[idx] = server
 	}
 	return config, nil
 }

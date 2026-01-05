@@ -16,21 +16,16 @@ var cmdAddRules = &base.Command{
 	Short:       "Add routing rules",
 	Long: `
 Add routing rules to Xray.
-
 Arguments:
-
-	-s, -server <server:port>
+	-s, -server 
 		The API server address. Default 127.0.0.1:8080
-
-	-t, -timeout <seconds>
+	-t, -timeout
 		Timeout seconds to call API. Default 3
-
 	-append
-		Append to the existing configuration instead of replacing it. Default false
+		append or replace config. Default false
 
 Example:
-
-	{{.Exec}} {{.LongName}} --server=127.0.0.1:8080 c1.json c2.json
+    {{.Exec}} {{.LongName}} --server=127.0.0.1:8080 c1.json c2.json
 `,
 	Run: executeAddRules,
 }

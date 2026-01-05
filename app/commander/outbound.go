@@ -8,7 +8,6 @@ import (
 	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/common/net/cnc"
-	"github.com/HZ-PRE/XrarCore/common/serial"
 	"github.com/HZ-PRE/XrarCore/common/signal/done"
 	"github.com/HZ-PRE/XrarCore/transport"
 )
@@ -108,14 +107,4 @@ func (co *Outbound) Close() error {
 
 	co.closed = true
 	return co.listener.Close()
-}
-
-// SenderSettings implements outbound.Handler.
-func (co *Outbound) SenderSettings() *serial.TypedMessage {
-	return nil
-}
-
-// ProxySettings implements outbound.Handler.
-func (co *Outbound) ProxySettings() *serial.TypedMessage {
-	return nil
 }

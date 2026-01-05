@@ -3,8 +3,6 @@ package vmess
 import (
 	"strings"
 
-	"google.golang.org/protobuf/proto"
-
 	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/HZ-PRE/XrarCore/common/protocol"
 	"github.com/HZ-PRE/XrarCore/common/uuid"
@@ -28,21 +26,6 @@ func (a *MemoryAccount) Equals(account protocol.Account) bool {
 		return false
 	}
 	return a.ID.Equals(vmessAccount.ID)
-}
-
-func (a *MemoryAccount) ToProto() proto.Message {
-	var test = ""
-	if a.AuthenticatedLengthExperiment {
-		test = "AuthenticatedLength|"
-	}
-	if a.NoTerminationSignal {
-		test = test + "NoTerminationSignal"
-	}
-	return &Account{
-		Id:               a.ID.String(),
-		TestsEnabled:     test,
-		SecuritySettings: &protocol.SecurityConfig{Type: a.Security},
-	}
 }
 
 // AsAccount implements protocol.Account.

@@ -46,14 +46,6 @@ var (
 	errSlowDown   = errors.New("slow down")
 )
 
-func (p *pipe) Len() int32 {
-	data := p.data
-	if data == nil {
-		return 0
-	}
-	return data.Len()
-}
-
 func (p *pipe) getState(forRead bool) error {
 	switch p.state {
 	case open:
@@ -200,19 +192,16 @@ func (p *pipe) Interrupt() {
 	p.Lock()
 	defer p.Unlock()
 
-	if !p.data.IsEmpty() {
-		buf.ReleaseMulti(p.data)
-		p.data = nil
-		if p.state == closed {
-			p.state = errord
-		}
-	}
-
 	if p.state == closed || p.state == errord {
 		return
 	}
 
 	p.state = errord
+
+	if !p.data.IsEmpty() {
+		buf.ReleaseMulti(p.data)
+		p.data = nil
+	}
 
 	common.Must(p.done.Close())
 }

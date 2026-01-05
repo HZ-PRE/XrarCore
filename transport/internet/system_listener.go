@@ -21,6 +21,19 @@ type DefaultListener struct {
 	controllers []control.Func
 }
 
+type combinedListener struct {
+	net.Listener
+	locker *FileLocker // for unix domain socket
+}
+
+func (cl *combinedListener) Close() error {
+	if cl.locker != nil {
+		cl.locker.Release()
+		cl.locker = nil
+	}
+	return cl.Listener.Close()
+}
+
 func getControlFunc(ctx context.Context, sockopt *SocketConfig, controllers []control.Func) func(network, address string, c syscall.RawConn) error {
 	return func(network, address string, c syscall.RawConn) error {
 		return c.Control(func(fd uintptr) {
@@ -41,40 +54,6 @@ func getControlFunc(ctx context.Context, sockopt *SocketConfig, controllers []co
 	}
 }
 
-// For some reason, other component of ray will assume the listener is a TCP listener and have valid remote address.
-// But in fact it doesn't. So we need to wrap the listener to make it return 0.0.0.0(unspecified) as remote address.
-// If other issues encountered, we should able to fix it here.
-type UnixListenerWrapper struct {
-	*net.UnixListener
-	locker *FileLocker
-}
-
-func (l *UnixListenerWrapper) Accept() (net.Conn, error) {
-	conn, err := l.UnixListener.Accept()
-	if err != nil {
-		return nil, err
-	}
-	return &UnixConnWrapper{UnixConn: conn.(*net.UnixConn)}, nil
-}
-
-func (l *UnixListenerWrapper) Close() error {
-	if l.locker != nil {
-		l.locker.Release()
-		l.locker = nil
-	}
-	return l.UnixListener.Close()
-}
-
-type UnixConnWrapper struct {
-	*net.UnixConn
-}
-
-func (conn *UnixConnWrapper) RemoteAddr() net.Addr {
-	return &net.TCPAddr{
-		IP: []byte{0, 0, 0, 0},
-	}
-}
-
 func (dl *DefaultListener) Listen(ctx context.Context, addr net.Addr, sockopt *SocketConfig) (l net.Listener, err error) {
 	var lc net.ListenConfig
 	var network, address string
@@ -88,25 +67,9 @@ func (dl *DefaultListener) Listen(ctx context.Context, addr net.Addr, sockopt *S
 		network = addr.Network()
 		address = addr.String()
 		lc.Control = getControlFunc(ctx, sockopt, dl.controllers)
-		// default disable keepalive
-		lc.KeepAlive = -1
 		if sockopt != nil {
-			if sockopt.TcpKeepAliveIdle*sockopt.TcpKeepAliveInterval < 0 {
-				return nil, errors.New("invalid TcpKeepAliveIdle or TcpKeepAliveInterval value: ", sockopt.TcpKeepAliveIdle, " ", sockopt.TcpKeepAliveInterval)
-			}
-			lc.KeepAliveConfig = net.KeepAliveConfig{
-				Enable:   false,
-				Idle:     -1,
-				Interval: -1,
-				Count:    -1,
-			}
-			if sockopt.TcpKeepAliveIdle > 0 {
-				lc.KeepAliveConfig.Enable = true
-				lc.KeepAliveConfig.Idle = time.Duration(sockopt.TcpKeepAliveIdle) * time.Second
-			}
-			if sockopt.TcpKeepAliveInterval > 0 {
-				lc.KeepAliveConfig.Enable = true
-				lc.KeepAliveConfig.Interval = time.Duration(sockopt.TcpKeepAliveInterval) * time.Second
+			if sockopt.TcpKeepAliveInterval != 0 || sockopt.TcpKeepAliveIdle != 0 {
+				lc.KeepAlive = time.Duration(-1)
 			}
 			if sockopt.TcpMptcp {
 				lc.SetMultipathTCP(true)
@@ -150,9 +113,9 @@ func (dl *DefaultListener) Listen(ctx context.Context, addr net.Addr, sockopt *S
 			callback = func(l net.Listener, err error) (net.Listener, error) {
 				if err != nil {
 					locker.Release()
-					return nil, err
+					return l, err
 				}
-				l = &UnixListenerWrapper{UnixListener: l.(*net.UnixListener), locker: locker}
+				l = &combinedListener{Listener: l, locker: locker}
 				if filePerm == nil {
 					return l, nil
 				}
@@ -166,8 +129,9 @@ func (dl *DefaultListener) Listen(ctx context.Context, addr net.Addr, sockopt *S
 		}
 	}
 
-	l, err = callback(lc.Listen(ctx, network, address))
-	if err == nil && sockopt != nil && sockopt.AcceptProxyProtocol {
+	l, err = lc.Listen(ctx, network, address)
+	l, err = callback(l, err)
+	if sockopt != nil && sockopt.AcceptProxyProtocol {
 		policyFunc := func(upstream net.Addr) (proxyproto.Policy, error) { return proxyproto.REQUIRE, nil }
 		l = &proxyproto.Listener{Listener: l, Policy: policyFunc}
 	}

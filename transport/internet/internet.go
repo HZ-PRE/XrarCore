@@ -5,6 +5,8 @@ import (
 	"strings"
 )
 
+//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
+
 func IsValidHTTPHost(request string, config string) bool {
 	r := strings.ToLower(request)
 	c := strings.ToLower(config)

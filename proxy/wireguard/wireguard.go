@@ -12,6 +12,8 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 )
 
+//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
+
 var wgLogger = &device.Logger{
 	Verbosef: func(format string, args ...any) {
 		log.Record(&log.GeneralMessage{

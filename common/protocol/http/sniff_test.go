@@ -1,7 +1,6 @@
 package http_test
 
 import (
-	"context"
 	"testing"
 
 	. "github.com/HZ-PRE/XrarCore/common/protocol/http"
@@ -89,7 +88,7 @@ first_name=John&last_name=Doe&action=Submit`,
 	}
 
 	for _, test := range cases {
-		header, err := SniffHTTP([]byte(test.input), context.TODO())
+		header, err := SniffHTTP([]byte(test.input))
 		if test.err {
 			if err == nil {
 				t.Errorf("Expect error but nil, in test: %v", test)

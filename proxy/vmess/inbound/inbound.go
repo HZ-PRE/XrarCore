@@ -1,5 +1,7 @@
 package inbound
 
+//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
+
 import (
 	"context"
 	"io"
@@ -56,7 +58,7 @@ func (v *userByEmail) Add(u *protocol.MemoryUser) bool {
 	return v.addNoLock(u)
 }
 
-func (v *userByEmail) GetOrGenerate(email string) (*protocol.MemoryUser, bool) {
+func (v *userByEmail) Get(email string) (*protocol.MemoryUser, bool) {
 	email = strings.ToLower(email)
 
 	v.Lock()
@@ -80,13 +82,6 @@ func (v *userByEmail) GetOrGenerate(email string) (*protocol.MemoryUser, bool) {
 	return user, found
 }
 
-func (v *userByEmail) Get(email string) *protocol.MemoryUser {
-	email = strings.ToLower(email)
-	v.Lock()
-	defer v.Unlock()
-	return v.cache[email]
-}
-
 func (v *userByEmail) Remove(email string) bool {
 	email = strings.ToLower(email)
 
@@ -106,6 +101,7 @@ type Handler struct {
 	inboundHandlerManager feature_inbound.Manager
 	clients               *vmess.TimedUserValidator
 	usersByEmail          *userByEmail
+	detours               *DetourConfig
 	sessionHistory        *encoding.SessionHistory
 }
 
@@ -116,6 +112,7 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 		policyManager:         v.GetFeature(policy.ManagerType()).(policy.Manager),
 		inboundHandlerManager: v.GetFeature(feature_inbound.ManagerType()).(feature_inbound.Manager),
 		clients:               vmess.NewTimedUserValidator(),
+		detours:               config.Detour,
 		usersByEmail:          newUserByEmail(config.GetDefaultValue()),
 		sessionHistory:        encoding.NewSessionHistory(),
 	}
@@ -146,24 +143,12 @@ func (*Handler) Network() []net.Network {
 	return []net.Network{net.Network_TCP, net.Network_UNIX}
 }
 
-func (h *Handler) GetOrGenerateUser(email string) *protocol.MemoryUser {
-	user, existing := h.usersByEmail.GetOrGenerate(email)
+func (h *Handler) GetUser(email string) *protocol.MemoryUser {
+	user, existing := h.usersByEmail.Get(email)
 	if !existing {
 		h.clients.Add(user)
 	}
 	return user
-}
-
-func (h *Handler) GetUser(ctx context.Context, email string) *protocol.MemoryUser {
-	return h.usersByEmail.Get(email)
-}
-
-func (h *Handler) GetUsers(ctx context.Context) []*protocol.MemoryUser {
-	return h.clients.GetUsers()
-}
-
-func (h *Handler) GetUsersCount(context.Context) int64 {
-	return h.clients.GetCount()
 }
 
 func (h *Handler) AddUser(ctx context.Context, user *protocol.MemoryUser) error {
@@ -321,8 +306,38 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	return nil
 }
 
-// Stub command generator
 func (h *Handler) generateCommand(ctx context.Context, request *protocol.RequestHeader) protocol.ResponseCommand {
+	if h.detours != nil {
+		tag := h.detours.To
+		if h.inboundHandlerManager != nil {
+			handler, err := h.inboundHandlerManager.GetHandler(ctx, tag)
+			if err != nil {
+				errors.LogWarningInner(ctx, err, "failed to get detour handler: ", tag)
+				return nil
+			}
+			proxyHandler, port, availableMin := handler.GetRandomInboundProxy()
+			inboundHandler, ok := proxyHandler.(*Handler)
+			if ok && inboundHandler != nil {
+				if availableMin > 255 {
+					availableMin = 255
+				}
+
+				errors.LogDebug(ctx, "pick detour handler for port ", port, " for ", availableMin, " minutes.")
+				user := inboundHandler.GetUser(request.User.Email)
+				if user == nil {
+					return nil
+				}
+				account := user.Account.(*vmess.MemoryAccount)
+				return &protocol.CommandSwitchAccount{
+					Port:     port,
+					ID:       account.ID.UUID(),
+					Level:    user.Level,
+					ValidMin: byte(availableMin),
+				}
+			}
+		}
+	}
+
 	return nil
 }
 

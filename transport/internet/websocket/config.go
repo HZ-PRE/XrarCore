@@ -7,6 +7,8 @@ import (
 	"github.com/HZ-PRE/XrarCore/transport/internet"
 )
 
+const protocolName = "websocket"
+
 func (c *Config) GetNormalizedPath() string {
 	path := c.Path
 	if path == "" {
@@ -23,6 +25,7 @@ func (c *Config) GetRequestHeader() http.Header {
 	for k, v := range c.Header {
 		header.Add(k, v)
 	}
+	header.Set("Host", c.Host)
 	return header
 }
 

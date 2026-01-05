@@ -3,7 +3,6 @@ package signal
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/HZ-PRE/XrarCore/common"
@@ -15,12 +14,10 @@ type ActivityUpdater interface {
 }
 
 type ActivityTimer struct {
-	mu        sync.RWMutex
+	sync.RWMutex
 	updated   chan struct{}
 	checkTask *task.Periodic
 	onTimeout func()
-	consumed  atomic.Bool
-	once      sync.Once
 }
 
 func (t *ActivityTimer) Update() {
@@ -40,39 +37,39 @@ func (t *ActivityTimer) check() error {
 }
 
 func (t *ActivityTimer) finish() {
-	t.once.Do(func() {
-		t.consumed.Store(true)
-		t.mu.Lock()
-		defer t.mu.Unlock()
+	t.Lock()
+	defer t.Unlock()
 
-		common.CloseIfExists(t.checkTask)
+	if t.onTimeout != nil {
 		t.onTimeout()
-	})
+		t.onTimeout = nil
+	}
+	if t.checkTask != nil {
+		t.checkTask.Close()
+		t.checkTask = nil
+	}
 }
 
 func (t *ActivityTimer) SetTimeout(timeout time.Duration) {
-	if t.consumed.Load() {
-		return
-	}
 	if timeout == 0 {
 		t.finish()
 		return
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	// double check, just in case
-	if t.consumed.Load() {
-		return
-	}
-	newCheckTask := &task.Periodic{
+	checkTask := &task.Periodic{
 		Interval: timeout,
 		Execute:  t.check,
 	}
-	common.CloseIfExists(t.checkTask)
-	t.checkTask = newCheckTask
+
+	t.Lock()
+
+	if t.checkTask != nil {
+		t.checkTask.Close()
+	}
+	t.checkTask = checkTask
+	t.Unlock()
 	t.Update()
-	common.Must(newCheckTask.Start())
+	common.Must(checkTask.Start())
 }
 
 func CancelAfterInactivity(ctx context.Context, cancel context.CancelFunc, timeout time.Duration) *ActivityTimer {

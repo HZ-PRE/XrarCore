@@ -53,10 +53,9 @@ func dialhttpUpgrade(ctx context.Context, dest net.Destination, streamSettings *
 
 	var conn net.Conn
 	var requestURL url.URL
-	tConfig := tls.ConfigFromStreamSettings(streamSettings)
-	if tConfig != nil {
-		tlsConfig := tConfig.GetTLSConfig(tls.WithDestination(dest), tls.WithNextProto("http/1.1"))
-		if fingerprint := tls.GetFingerprint(tConfig.Fingerprint); fingerprint != nil {
+	if config := tls.ConfigFromStreamSettings(streamSettings); config != nil {
+		tlsConfig := config.GetTLSConfig(tls.WithDestination(dest), tls.WithNextProto("http/1.1"))
+		if fingerprint := tls.GetFingerprint(config.Fingerprint); fingerprint != nil {
 			conn = tls.UClient(pconn, tlsConfig, fingerprint)
 			if err := conn.(*tls.UConn).WebsocketHandshakeContext(ctx); err != nil {
 				return nil, err
@@ -70,17 +69,12 @@ func dialhttpUpgrade(ctx context.Context, dest net.Destination, streamSettings *
 		requestURL.Scheme = "http"
 	}
 
-	requestURL.Host = transportConfiguration.Host
-	if requestURL.Host == "" && tConfig != nil {
-		requestURL.Host = tConfig.ServerName
-	}
-	if requestURL.Host == "" {
-		requestURL.Host = dest.Address.String()
-	}
+	requestURL.Host = dest.NetAddr()
 	requestURL.Path = transportConfiguration.GetNormalizedPath()
 	req := &http.Request{
 		Method: http.MethodGet,
 		URL:    &requestURL,
+		Host:   transportConfiguration.Host,
 		Header: make(http.Header),
 	}
 	for key, value := range transportConfiguration.Header {

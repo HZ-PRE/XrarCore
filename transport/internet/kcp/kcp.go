@@ -6,4 +6,4 @@
 //	xtaci@github for translating to Golang
 package kcp
 
-const protocolName = "mkcp"
+//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen

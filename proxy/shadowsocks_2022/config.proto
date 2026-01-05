@@ -8,7 +8,6 @@ option java_multiple_files = true;
 
 import "common/net/network.proto";
 import "common/net/address.proto";
-import "common/protocol/user.proto";
 
 message ServerConfig {
   string method = 1;
@@ -21,7 +20,7 @@ message ServerConfig {
 message MultiUserServerConfig {
   string method = 1;
   string key = 2;
-  repeated xray.common.protocol.User users = 3;
+  repeated User users = 3;
   repeated xray.common.net.Network network = 4;
 }
 
@@ -40,8 +39,10 @@ message RelayServerConfig {
   repeated xray.common.net.Network network = 4;
 }
 
-message Account {
+message User {
   string key = 1;
+  string email = 2;
+  int32 level = 3;
 }
 
 message ClientConfig {

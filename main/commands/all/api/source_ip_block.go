@@ -14,34 +14,25 @@ import (
 var cmdSourceIpBlock = &base.Command{
 	CustomFlags: true,
 	UsageLine:   "{{.Exec}} api sib [--server=127.0.0.1:8080] -outbound=blocked -inbound=socks 1.2.3.4",
-	Short:       "Block connections by source IP",
+	Short:       "Drop connections by source ip",
 	Long: `
-Block connections by source IP address.
-
+Drop connections by source ip.
 Arguments:
-
-	-s, -server <server:port>
+	-s, -server 
 		The API server address. Default 127.0.0.1:8080
-
-	-t, -timeout <seconds>
-		Timeout in seconds for calling API. Default 3
-
+	-t, -timeout
+		Timeout seconds to call API. Default 3
 	-outbound
-		Specifies the outbound tag.
-
+		route traffic to specific outbound.
 	-inbound
-		Specifies the inbound tag.
-
+		target traffig from specific inbound.
 	-ruletag
-		The ruleTag. Default sourceIpBlock
-
+		set ruleTag. Default sourceIpBlock
 	-reset
 		remove ruletag and apply new source IPs. Default false
 
-Example:
-
-	{{.Exec}} {{.LongName}} --server=127.0.0.1:8080 -outbound=blocked -inbound=socks 1.2.3.4
-	{{.Exec}} {{.LongName}} --server=127.0.0.1:8080 -outbound=blocked -inbound=socks 1.2.3.4 -reset
+	Example:
+    {{.Exec}} {{.LongName}} --server=127.0.0.1:8080 c1.json c2.json
 `,
 	Run: executeSourceIpBlock,
 }
@@ -93,6 +84,7 @@ func executeSourceIpBlock(cmd *base.Command, args []string) {
 				"ruleTag" : "%s",
 				"inboundTag": %s,		
 				"outboundTag": "%s",
+				"type": "field",
 				"source": %s
 			  }
 			]

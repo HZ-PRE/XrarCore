@@ -155,14 +155,10 @@ func TestIPOnDemand(t *testing.T) {
 				TargetTag: &RoutingRule_Tag{
 					Tag: "test",
 				},
-				Geoip: []*GeoIP{
+				Cidr: []*CIDR{
 					{
-						Cidr: []*CIDR{
-							{
-								Ip:     []byte{192, 168, 0, 0},
-								Prefix: 16,
-							},
-						},
+						Ip:     []byte{192, 168, 0, 0},
+						Prefix: 16,
 					},
 				},
 			},
@@ -177,7 +173,7 @@ func TestIPOnDemand(t *testing.T) {
 		IPv4Enable: true,
 		IPv6Enable: true,
 		FakeEnable: false,
-	}).Return([]net.IP{{192, 168, 0, 1}}, uint32(600), nil).AnyTimes()
+	}).Return([]net.IP{{192, 168, 0, 1}}, nil).AnyTimes()
 
 	r := new(Router)
 	common.Must(r.Init(context.TODO(), config, mockDNS, nil, nil))
@@ -200,14 +196,10 @@ func TestIPIfNonMatchDomain(t *testing.T) {
 				TargetTag: &RoutingRule_Tag{
 					Tag: "test",
 				},
-				Geoip: []*GeoIP{
+				Cidr: []*CIDR{
 					{
-						Cidr: []*CIDR{
-							{
-								Ip:     []byte{192, 168, 0, 0},
-								Prefix: 16,
-							},
-						},
+						Ip:     []byte{192, 168, 0, 0},
+						Prefix: 16,
 					},
 				},
 			},
@@ -222,7 +214,7 @@ func TestIPIfNonMatchDomain(t *testing.T) {
 		IPv4Enable: true,
 		IPv6Enable: true,
 		FakeEnable: false,
-	}).Return([]net.IP{{192, 168, 0, 1}}, uint32(600), nil).AnyTimes()
+	}).Return([]net.IP{{192, 168, 0, 1}}, nil).AnyTimes()
 
 	r := new(Router)
 	common.Must(r.Init(context.TODO(), config, mockDNS, nil, nil))
@@ -245,14 +237,10 @@ func TestIPIfNonMatchIP(t *testing.T) {
 				TargetTag: &RoutingRule_Tag{
 					Tag: "test",
 				},
-				Geoip: []*GeoIP{
+				Cidr: []*CIDR{
 					{
-						Cidr: []*CIDR{
-							{
-								Ip:     []byte{127, 0, 0, 0},
-								Prefix: 8,
-							},
-						},
+						Ip:     []byte{127, 0, 0, 0},
+						Prefix: 8,
 					},
 				},
 			},

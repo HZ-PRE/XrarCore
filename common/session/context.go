@@ -6,7 +6,6 @@ import (
 
 	"github.com/HZ-PRE/XrarCore/common/ctx"
 	"github.com/HZ-PRE/XrarCore/common/net"
-	"github.com/HZ-PRE/XrarCore/features/outbound"
 	"github.com/HZ-PRE/XrarCore/features/routing"
 )
 
@@ -17,15 +16,13 @@ const (
 	inboundSessionKey         ctx.SessionKey = 1
 	outboundSessionKey        ctx.SessionKey = 2
 	contentSessionKey         ctx.SessionKey = 3
-	isReverseMuxKey           ctx.SessionKey = 4  // is reverse mux
-	sockoptSessionKey         ctx.SessionKey = 5  // used by dokodemo to only receive sockopt.Mark
-	trackedConnectionErrorKey ctx.SessionKey = 6  // used by observer to get outbound error
-	dispatcherKey             ctx.SessionKey = 7  // used by ss2022 inbounds to get dispatcher
-	timeoutOnlyKey            ctx.SessionKey = 8  // mux context's child contexts to only cancel when its own traffic times out
-	allowedNetworkKey         ctx.SessionKey = 9  // muxcool server control incoming request tcp/udp
-	fullHandlerKey            ctx.SessionKey = 10 // outbound gets full handler
-	mitmAlpn11Key             ctx.SessionKey = 11 // used by TLS dialer
-	mitmServerNameKey         ctx.SessionKey = 12 // used by TLS dialer
+	muxPreferredSessionKey    ctx.SessionKey = 4
+	sockoptSessionKey         ctx.SessionKey = 5
+	trackedConnectionErrorKey ctx.SessionKey = 6
+	dispatcherKey             ctx.SessionKey = 7
+	timeoutOnlyKey            ctx.SessionKey = 8
+	allowedNetworkKey         ctx.SessionKey = 9
+	handlerSessionKey         ctx.SessionKey = 10
 )
 
 func ContextWithInbound(ctx context.Context, inbound *Inbound) context.Context {
@@ -41,20 +38,6 @@ func InboundFromContext(ctx context.Context) *Inbound {
 
 func ContextWithOutbounds(ctx context.Context, outbounds []*Outbound) context.Context {
 	return context.WithValue(ctx, outboundSessionKey, outbounds)
-}
-
-func SubContextFromMuxInbound(ctx context.Context) context.Context {
-	newOutbounds := []*Outbound{{}}
-
-	content := ContentFromContext(ctx)
-	newContent := Content{}
-	if content != nil {
-		newContent = *content
-		if content.Attributes != nil {
-			panic("content.Attributes != nil")
-		}
-	}
-	return ContextWithContent(ContextWithOutbounds(ctx, newOutbounds), &newContent)
 }
 
 func OutboundsFromContext(ctx context.Context) []*Outbound {
@@ -75,21 +58,25 @@ func ContentFromContext(ctx context.Context) *Content {
 	return nil
 }
 
-func ContextWithIsReverseMux(ctx context.Context, isReverseMux bool) context.Context {
-	return context.WithValue(ctx, isReverseMuxKey, isReverseMux)
+// ContextWithMuxPreferred returns a new context with the given bool
+func ContextWithMuxPreferred(ctx context.Context, forced bool) context.Context {
+	return context.WithValue(ctx, muxPreferredSessionKey, forced)
 }
 
-func IsReverseMuxFromContext(ctx context.Context) bool {
-	if val, ok := ctx.Value(isReverseMuxKey).(bool); ok {
+// MuxPreferredFromContext returns value in this context, or false if not contained.
+func MuxPreferredFromContext(ctx context.Context) bool {
+	if val, ok := ctx.Value(muxPreferredSessionKey).(bool); ok {
 		return val
 	}
 	return false
 }
 
+// ContextWithSockopt returns a new context with Socket configs included
 func ContextWithSockopt(ctx context.Context, s *Sockopt) context.Context {
 	return context.WithValue(ctx, sockoptSessionKey, s)
 }
 
+// SockoptFromContext returns Socket configs in this context, or nil if not contained.
 func SockoptFromContext(ctx context.Context) *Sockopt {
 	if sockopt, ok := ctx.Value(sockoptSessionKey).(*Sockopt); ok {
 		return sockopt
@@ -158,37 +145,4 @@ func AllowedNetworkFromContext(ctx context.Context) net.Network {
 		return val
 	}
 	return net.Network_Unknown
-}
-
-func ContextWithFullHandler(ctx context.Context, handler outbound.Handler) context.Context {
-	return context.WithValue(ctx, fullHandlerKey, handler)
-}
-
-func FullHandlerFromContext(ctx context.Context) outbound.Handler {
-	if val, ok := ctx.Value(fullHandlerKey).(outbound.Handler); ok {
-		return val
-	}
-	return nil
-}
-
-func ContextWithMitmAlpn11(ctx context.Context, alpn11 bool) context.Context {
-	return context.WithValue(ctx, mitmAlpn11Key, alpn11)
-}
-
-func MitmAlpn11FromContext(ctx context.Context) bool {
-	if val, ok := ctx.Value(mitmAlpn11Key).(bool); ok {
-		return val
-	}
-	return false
-}
-
-func ContextWithMitmServerName(ctx context.Context, serverName string) context.Context {
-	return context.WithValue(ctx, mitmServerNameKey, serverName)
-}
-
-func MitmServerNameFromContext(ctx context.Context) string {
-	if val, ok := ctx.Value(mitmServerNameKey).(string); ok {
-		return val
-	}
-	return ""
 }

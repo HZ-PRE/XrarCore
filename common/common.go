@@ -7,11 +7,12 @@ import (
 	"go/build"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 
 	"github.com/HZ-PRE/XrarCore/common/errors"
 )
+
+//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
 
 // ErrNoClue is for the situation that existing information is not enough to make a decision. For example, Router may return this error when there is no suitable route.
 var ErrNoClue = errors.New("not enough information for making a decision")
@@ -24,9 +25,7 @@ func Must(err error) {
 }
 
 // Must2 panics if the second parameter is not nil, otherwise returns the first parameter.
-// This is useful when function returned "sth, err" and avoid many "if err != nil"
-// Internal usage only, if user input can cause err, it must be handled
-func Must2[T any](v T, err error) T {
+func Must2(v interface{}, err error) interface{} {
 	Must(err)
 	return v
 }
@@ -41,7 +40,7 @@ func Error2(v interface{}, err error) error {
 func envFile() (string, error) {
 	if file := os.Getenv("GOENV"); file != "" {
 		if file == "off" {
-			return "", errors.New("GOENV=off")
+			return "", fmt.Errorf("GOENV=off")
 		}
 		return file, nil
 	}
@@ -50,7 +49,7 @@ func envFile() (string, error) {
 		return "", err
 	}
 	if dir == "" {
-		return "", errors.New("missing user-config dir")
+		return "", fmt.Errorf("missing user-config dir")
 	}
 	return filepath.Join(dir, "go", "env"), nil
 }
@@ -63,7 +62,7 @@ func GetRuntimeEnv(key string) (string, error) {
 		return "", err
 	}
 	if file == "" {
-		return "", errors.New("missing runtime env file")
+		return "", fmt.Errorf("missing runtime env file")
 	}
 	var data []byte
 	var runtimeEnv string
@@ -153,15 +152,4 @@ func GetModuleName(pathToProjectRoot string) (string, error) {
 		break
 	}
 	return moduleName, fmt.Errorf("no `go.mod` file in every parent directory of `%s`", pathToProjectRoot)
-}
-
-// CloseIfExists call obj.Close() if obj is not nil.
-func CloseIfExists(obj any) error {
-	if obj != nil {
-		v := reflect.ValueOf(obj)
-		if !v.IsNil() {
-			return Close(obj)
-		}
-	}
-	return nil
 }

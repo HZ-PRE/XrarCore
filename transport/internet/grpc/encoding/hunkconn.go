@@ -3,10 +3,11 @@ package encoding
 import (
 	"context"
 	"io"
+	"net"
 
 	"github.com/HZ-PRE/XrarCore/common/buf"
 	"github.com/HZ-PRE/XrarCore/common/errors"
-	"github.com/HZ-PRE/XrarCore/common/net"
+	xnet "github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/common/net/cnc"
 	"github.com/HZ-PRE/XrarCore/common/signal/done"
 	"google.golang.org/grpc/metadata"
@@ -54,7 +55,7 @@ func NewHunkConn(hc HunkConn, cancel context.CancelFunc) net.Conn {
 	if ok {
 		header := md.Get("x-real-ip")
 		if len(header) > 0 {
-			realip := net.ParseAddress(header[0])
+			realip := xnet.ParseAddress(header[0])
 			if realip.Family().IsIP() {
 				rAddr = &net.TCPAddr{
 					IP:   realip.IP(),

@@ -7,17 +7,18 @@ import (
 
 	. "github.com/HZ-PRE/XrarCore/app/dns"
 	"github.com/HZ-PRE/XrarCore/common"
+	"github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/features/dns"
 )
 
 func TestLocalNameServer(t *testing.T) {
 	s := NewLocalNameServer()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
-	ips, _, err := s.QueryIP(ctx, "google.com", dns.IPOption{
+	ips, err := s.QueryIP(ctx, "google.com", net.IP{}, dns.IPOption{
 		IPv4Enable: true,
 		IPv6Enable: true,
 		FakeEnable: false,
-	})
+	}, false)
 	cancel()
 	common.Must(err)
 	if len(ips) == 0 {

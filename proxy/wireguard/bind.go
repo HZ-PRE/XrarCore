@@ -3,13 +3,15 @@ package wireguard
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"net/netip"
 	"strconv"
 	"sync"
 
 	"golang.zx2c4.com/wireguard/conn"
 
-	"github.com/HZ-PRE/XrarCore/common/net"
+	xnet "github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/features/dns"
 	"github.com/HZ-PRE/XrarCore/transport/internet"
 )
@@ -50,21 +52,21 @@ func (n *netBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 		return nil, err
 	}
 
-	addr := net.ParseAddress(ipStr)
-	if addr.Family() == net.AddressFamilyDomain {
-		ips, _, err := n.dns.LookupIP(addr.Domain(), n.dnsOption)
+	addr := xnet.ParseAddress(ipStr)
+	if addr.Family() == xnet.AddressFamilyDomain {
+		ips, err := n.dns.LookupIP(addr.Domain(), n.dnsOption)
 		if err != nil {
 			return nil, err
 		} else if len(ips) == 0 {
 			return nil, dns.ErrEmptyResponse
 		}
-		addr = net.IPAddress(ips[0])
+		addr = xnet.IPAddress(ips[0])
 	}
 
-	dst := net.Destination{
+	dst := xnet.Destination{
 		Address: addr,
-		Port:    net.Port(portNum),
-		Network: net.Network_UDP,
+		Port:    xnet.Port(portNum),
+		Network: xnet.Network_UDP,
 	}
 
 	return &netEndpoint{
@@ -151,7 +153,7 @@ func (bind *netBindClient) connectTo(endpoint *netEndpoint) error {
 			v.endpoint = endpoint
 			v.err = err
 			v.waiter.Done()
-			if err != nil {
+			if err != nil && errors.Is(err, io.EOF) {
 				endpoint.conn = nil
 				return
 			}
@@ -213,7 +215,7 @@ func (bind *netBindServer) Send(buff [][]byte, endpoint conn.Endpoint) error {
 }
 
 type netEndpoint struct {
-	dst  net.Destination
+	dst  xnet.Destination
 	conn net.Conn
 }
 
@@ -246,7 +248,7 @@ func (e netEndpoint) SrcToString() string {
 	return ""
 }
 
-func toNetIpAddr(addr net.Address) netip.Addr {
+func toNetIpAddr(addr xnet.Address) netip.Addr {
 	if addr.Family().IsIPv4() {
 		ip := addr.IP()
 		return netip.AddrFrom4([4]byte{ip[0], ip[1], ip[2], ip[3]})

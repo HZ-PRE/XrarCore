@@ -2,7 +2,6 @@ package socks
 
 import (
 	"context"
-	goerrors "errors"
 	"io"
 	"time"
 
@@ -14,12 +13,12 @@ import (
 	"github.com/HZ-PRE/XrarCore/common/protocol"
 	udp_proto "github.com/HZ-PRE/XrarCore/common/protocol/udp"
 	"github.com/HZ-PRE/XrarCore/common/session"
+	"github.com/HZ-PRE/XrarCore/common/signal"
+	"github.com/HZ-PRE/XrarCore/common/task"
 	"github.com/HZ-PRE/XrarCore/core"
+	"github.com/HZ-PRE/XrarCore/features"
 	"github.com/HZ-PRE/XrarCore/features/policy"
 	"github.com/HZ-PRE/XrarCore/features/routing"
-	"github.com/HZ-PRE/XrarCore/proxy"
-	"github.com/HZ-PRE/XrarCore/proxy/http"
-	"github.com/HZ-PRE/XrarCore/transport"
 	"github.com/HZ-PRE/XrarCore/transport/internet/stat"
 	"github.com/HZ-PRE/XrarCore/transport/internet/udp"
 )
@@ -30,7 +29,6 @@ type Server struct {
 	policyManager policy.Manager
 	cone          bool
 	udpFilter     *UDPFilter
-	httpServer    *http.Server
 }
 
 // NewServer creates a new Server object.
@@ -41,20 +39,21 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 		policyManager: v.GetFeature(policy.ManagerType()).(policy.Manager),
 		cone:          ctx.Value("cone").(bool),
 	}
-	httpConfig := &http.ServerConfig{
-		UserLevel: config.UserLevel,
-	}
 	if config.AuthType == AuthType_PASSWORD {
-		httpConfig.Accounts = config.Accounts
 		s.udpFilter = new(UDPFilter) // We only use this when auth is enabled
 	}
-	s.httpServer, _ = http.NewServer(ctx, httpConfig)
 	return s, nil
 }
 
 func (s *Server) policy() policy.Session {
 	config := s.config
 	p := s.policyManager.ForLevel(config.UserLevel)
+	if config.Timeout > 0 {
+		features.PrintDeprecatedFeatureWarning("Socks timeout")
+	}
+	if config.Timeout > 0 && config.UserLevel == 0 {
+		p.Timeouts.ConnectionIdle = time.Duration(config.Timeout) * time.Second
+	}
 	return p
 }
 
@@ -75,25 +74,10 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	inbound.User = &protocol.MemoryUser{
 		Level: s.config.UserLevel,
 	}
-	if !proxy.IsRAWTransportWithoutSecurity(conn) {
-		inbound.CanSpliceCopy = 3
-	}
 
 	switch network {
 	case net.Network_TCP:
-		firstbyte := make([]byte, 1)
-		if n, err := conn.Read(firstbyte); n == 0 {
-			if goerrors.Is(err, io.EOF) {
-				errors.LogInfo(ctx, "Connection closed immediately, likely health check connection")
-				return nil
-			}
-			return errors.New("failed to read from connection").Base(err)
-		}
-		if firstbyte[0] != 5 && firstbyte[0] != 4 { // Check if it is Socks5/4/4a
-			errors.LogDebug(ctx, "Not Socks request, try to parse as HTTP request")
-			return s.httpServer.ProcessWithFirstbyte(ctx, network, conn, dispatcher, firstbyte...)
-		}
-		return s.processTCP(ctx, conn, dispatcher, firstbyte)
+		return s.processTCP(ctx, conn, dispatcher)
 	case net.Network_UDP:
 		return s.handleUDPPayload(ctx, conn, dispatcher)
 	default:
@@ -101,7 +85,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	}
 }
 
-func (s *Server) processTCP(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher, firstbyte []byte) error {
+func (s *Server) processTCP(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
 	plcy := s.policy()
 	if err := conn.SetReadDeadline(time.Now().Add(plcy.Timeouts.Handshake)); err != nil {
 		errors.LogInfoInner(ctx, err, "failed to set deadline")
@@ -119,13 +103,7 @@ func (s *Server) processTCP(ctx context.Context, conn stat.Connection, dispatche
 		localAddress: net.IPAddress(conn.LocalAddr().(*net.TCPAddr).IP),
 	}
 
-	// Firstbyte is for forwarded conn from SOCKS inbound
-	// Because it needs first byte to choose protocol
-	// We need to add it back
-	reader := &buf.BufferedReader{
-		Reader: buf.NewReader(conn),
-		Buffer: buf.MultiBuffer{buf.FromBytes(firstbyte)},
-	}
+	reader := &buf.BufferedReader{Reader: buf.NewReader(conn)}
 	request, err := svrSession.Handshake(reader, conn)
 	if err != nil {
 		if inbound.Source.IsValid() {
@@ -157,16 +135,8 @@ func (s *Server) processTCP(ctx context.Context, conn stat.Connection, dispatche
 				Reason: "",
 			})
 		}
-		if inbound.CanSpliceCopy == 2 {
-			inbound.CanSpliceCopy = 1
-		}
-		if err := dispatcher.DispatchLink(ctx, dest, &transport.Link{
-			Reader: reader,
-			Writer: buf.NewWriter(conn)},
-		); err != nil {
-			return errors.New("failed to dispatch request").Base(err)
-		}
-		return nil
+
+		return s.transport(ctx, reader, conn, dest, dispatcher, inbound)
 	}
 
 	if request.Command == protocol.RequestCommandUDP {
@@ -185,6 +155,51 @@ func (*Server) handleUDP(c io.Reader) error {
 	return common.Error2(io.Copy(buf.DiscardBytes, c))
 }
 
+func (s *Server) transport(ctx context.Context, reader io.Reader, writer io.Writer, dest net.Destination, dispatcher routing.Dispatcher, inbound *session.Inbound) error {
+	ctx, cancel := context.WithCancel(ctx)
+	timer := signal.CancelAfterInactivity(ctx, cancel, s.policy().Timeouts.ConnectionIdle)
+
+	if inbound != nil {
+		inbound.Timer = timer
+	}
+
+	plcy := s.policy()
+	ctx = policy.ContextWithBufferPolicy(ctx, plcy.Buffer)
+	link, err := dispatcher.Dispatch(ctx, dest)
+	if err != nil {
+		return err
+	}
+
+	requestDone := func() error {
+		defer timer.SetTimeout(plcy.Timeouts.DownlinkOnly)
+		if err := buf.Copy(buf.NewReader(reader), link.Writer, buf.UpdateActivity(timer)); err != nil {
+			return errors.New("failed to transport all TCP request").Base(err)
+		}
+
+		return nil
+	}
+
+	responseDone := func() error {
+		defer timer.SetTimeout(plcy.Timeouts.UplinkOnly)
+
+		v2writer := buf.NewWriter(writer)
+		if err := buf.Copy(link.Reader, v2writer, buf.UpdateActivity(timer)); err != nil {
+			return errors.New("failed to transport all TCP response").Base(err)
+		}
+
+		return nil
+	}
+
+	requestDonePost := task.OnSuccess(requestDone, task.Close(link.Writer))
+	if err := task.Run(ctx, requestDonePost, responseDone); err != nil {
+		common.Interrupt(link.Reader)
+		common.Interrupt(link.Writer)
+		return errors.New("connection ends").Base(err)
+	}
+
+	return nil
+}
+
 func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
 	if s.udpFilter != nil && !s.udpFilter.Check(conn.RemoteAddr()) {
 		errors.LogDebug(ctx, "Unauthorized UDP access from ", conn.RemoteAddr().String())
@@ -196,7 +211,6 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 
 		request := protocol.RequestHeaderFromContext(ctx)
 		if request == nil {
-			payload.Release()
 			return
 		}
 
@@ -211,15 +225,13 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 		udpMessage, err := EncodeUDPPacket(request, payload.Bytes())
 		payload.Release()
 
+		defer udpMessage.Release()
 		if err != nil {
 			errors.LogWarningInner(ctx, err, "failed to write UDP response")
-			return
 		}
 
 		conn.Write(udpMessage.Bytes())
-		udpMessage.Release()
 	})
-	defer udpServer.RemoveRay()
 
 	inbound := session.InboundFromContext(ctx)
 	if inbound != nil && inbound.Source.IsValid() {

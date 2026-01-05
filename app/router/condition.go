@@ -47,6 +47,20 @@ var matcherTypeMap = map[Domain_Type]strmatcher.Type{
 	Domain_Full:   strmatcher.Full,
 }
 
+func domainToMatcher(domain *Domain) (strmatcher.Matcher, error) {
+	matcherType, f := matcherTypeMap[domain.Type]
+	if !f {
+		return nil, errors.New("unsupported domain type", domain.Type)
+	}
+
+	matcher, err := matcherType.New(domain.Value)
+	if err != nil {
+		return nil, errors.New("failed to create domain matcher").Base(err)
+	}
+
+	return matcher, nil
+}
+
 type DomainMatcher struct {
 	matchers strmatcher.IndexMatcher
 }
@@ -69,6 +83,21 @@ func NewMphMatcherGroup(domains []*Domain) (*DomainMatcher, error) {
 	}, nil
 }
 
+func NewDomainMatcher(domains []*Domain) (*DomainMatcher, error) {
+	g := new(strmatcher.MatcherGroup)
+	for _, d := range domains {
+		m, err := domainToMatcher(d)
+		if err != nil {
+			return nil, err
+		}
+		g.Add(m)
+	}
+
+	return &DomainMatcher{
+		matchers: g,
+	}, nil
+}
+
 func (m *DomainMatcher) ApplyDomain(domain string) bool {
 	return len(m.matchers.Match(strings.ToLower(domain))) > 0
 }
@@ -82,72 +111,66 @@ func (m *DomainMatcher) Apply(ctx routing.Context) bool {
 	return m.ApplyDomain(domain)
 }
 
-type MatcherAsType byte
-
-const (
-	MatcherAsType_Local MatcherAsType = iota
-	MatcherAsType_Source
-	MatcherAsType_Target
-	MatcherAsType_VlessRoute // for port
-)
-
-type IPMatcher struct {
-	matcher GeoIPMatcher
-	asType  MatcherAsType
+type MultiGeoIPMatcher struct {
+	matchers []*GeoIPMatcher
+	onSource bool
 }
 
-func NewIPMatcher(geoips []*GeoIP, asType MatcherAsType) (*IPMatcher, error) {
-	matcher, err := BuildOptimizedGeoIPMatcher(geoips...)
-	if err != nil {
-		return nil, err
+func NewMultiGeoIPMatcher(geoips []*GeoIP, onSource bool) (*MultiGeoIPMatcher, error) {
+	var matchers []*GeoIPMatcher
+	for _, geoip := range geoips {
+		matcher, err := globalGeoIPContainer.Add(geoip)
+		if err != nil {
+			return nil, err
+		}
+		matchers = append(matchers, matcher)
 	}
-	return &IPMatcher{matcher: matcher, asType: asType}, nil
+
+	matcher := &MultiGeoIPMatcher{
+		matchers: matchers,
+		onSource: onSource,
+	}
+
+	return matcher, nil
 }
 
 // Apply implements Condition.
-func (m *IPMatcher) Apply(ctx routing.Context) bool {
+func (m *MultiGeoIPMatcher) Apply(ctx routing.Context) bool {
 	var ips []net.IP
-
-	switch m.asType {
-	case MatcherAsType_Local:
-		ips = ctx.GetLocalIPs()
-	case MatcherAsType_Source:
+	if m.onSource {
 		ips = ctx.GetSourceIPs()
-	case MatcherAsType_Target:
+	} else {
 		ips = ctx.GetTargetIPs()
-	default:
-		panic("unk asType")
 	}
-
-	return m.matcher.AnyMatch(ips)
+	for _, ip := range ips {
+		for _, matcher := range m.matchers {
+			if matcher.Match(ip) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type PortMatcher struct {
-	port   net.MemoryPortList
-	asType MatcherAsType
+	port     net.MemoryPortList
+	onSource bool
 }
 
-// NewPortMatcher create a new port matcher that can match source or local or destination port
-func NewPortMatcher(list *net.PortList, asType MatcherAsType) *PortMatcher {
+// NewPortMatcher create a new port matcher that can match source or destination port
+func NewPortMatcher(list *net.PortList, onSource bool) *PortMatcher {
 	return &PortMatcher{
-		port:   net.PortListFromProto(list),
-		asType: asType,
+		port:     net.PortListFromProto(list),
+		onSource: onSource,
 	}
 }
 
 // Apply implements Condition.
 func (v *PortMatcher) Apply(ctx routing.Context) bool {
-	switch v.asType {
-	case MatcherAsType_Local:
-		return v.port.Contains(ctx.GetLocalPort())
-	case MatcherAsType_Source:
+	if v.onSource {
 		return v.port.Contains(ctx.GetSourcePort())
-	case MatcherAsType_Target:
+	} else {
 		return v.port.Contains(ctx.GetTargetPort())
-	case MatcherAsType_VlessRoute:
-		return v.port.Contains(ctx.GetVlessRoute())
-	default:
-		panic("unk asType")
 	}
 }
 
@@ -169,28 +192,18 @@ func (v NetworkMatcher) Apply(ctx routing.Context) bool {
 }
 
 type UserMatcher struct {
-	user    []string
-	pattern []*regexp.Regexp
+	user []string
 }
 
 func NewUserMatcher(users []string) *UserMatcher {
 	usersCopy := make([]string, 0, len(users))
-	patternsCopy := make([]*regexp.Regexp, 0, len(users))
 	for _, user := range users {
 		if len(user) > 0 {
-			if len(user) > 7 && strings.HasPrefix(user, "regexp:") {
-				if re, err := regexp.Compile(user[7:]); err == nil {
-					patternsCopy = append(patternsCopy, re)
-				}
-				// Items of users slice with an invalid regexp syntax are ignored.
-				continue
-			}
 			usersCopy = append(usersCopy, user)
 		}
 	}
 	return &UserMatcher{
-		user:    usersCopy,
-		pattern: patternsCopy,
+		user: usersCopy,
 	}
 }
 
@@ -202,11 +215,6 @@ func (v *UserMatcher) Apply(ctx routing.Context) bool {
 	}
 	for _, u := range v.user {
 		if u == user {
-			return true
-		}
-	}
-	for _, re := range v.pattern {
-		if re.MatchString(user) {
 			return true
 		}
 	}

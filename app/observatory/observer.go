@@ -18,7 +18,6 @@ import (
 	"github.com/HZ-PRE/XrarCore/core"
 	"github.com/HZ-PRE/XrarCore/features/extension"
 	"github.com/HZ-PRE/XrarCore/features/outbound"
-	"github.com/HZ-PRE/XrarCore/features/routing"
 	"github.com/HZ-PRE/XrarCore/transport/internet/tagged"
 	"google.golang.org/protobuf/proto"
 )
@@ -32,8 +31,7 @@ type Observer struct {
 
 	finished *done.Instance
 
-	ohm        outbound.Manager
-	dispatcher routing.Dispatcher
+	ohm outbound.Manager
 }
 
 func (o *Observer) GetObservation(ctx context.Context) (proto.Message, error) {
@@ -133,7 +131,7 @@ func (o *Observer) probe(outbound string) ProbeResult {
 					return errors.New("cannot understand address").Base(err)
 				}
 				trackedCtx := session.TrackedConnectionError(o.ctx, errorCollectorForRequest)
-				conn, err := tagged.Dialer(trackedCtx, o.dispatcher, dest, outbound)
+				conn, err := tagged.Dialer(trackedCtx, dest, outbound)
 				if err != nil {
 					return errors.New("cannot dial remote address ", dest).Base(err)
 				}
@@ -217,19 +215,16 @@ func (o *Observer) findStatusLocationLockHolderOnly(outbound string) int {
 
 func New(ctx context.Context, config *Config) (*Observer, error) {
 	var outboundManager outbound.Manager
-	var dispatcher routing.Dispatcher
-	err := core.RequireFeatures(ctx, func(om outbound.Manager, rd routing.Dispatcher) {
+	err := core.RequireFeatures(ctx, func(om outbound.Manager) {
 		outboundManager = om
-		dispatcher = rd
 	})
 	if err != nil {
 		return nil, errors.New("Cannot get depended features").Base(err)
 	}
 	return &Observer{
-		config:     config,
-		ctx:        ctx,
-		ohm:        outboundManager,
-		dispatcher: dispatcher,
+		config: config,
+		ctx:    ctx,
+		ohm:    outboundManager,
 	}, nil
 }
 

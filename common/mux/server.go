@@ -3,7 +3,6 @@ package mux
 import (
 	"context"
 	"io"
-	"time"
 
 	"github.com/HZ-PRE/XrarCore/common"
 	"github.com/HZ-PRE/XrarCore/common/buf"
@@ -12,7 +11,6 @@ import (
 	"github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/common/protocol"
 	"github.com/HZ-PRE/XrarCore/common/session"
-	"github.com/HZ-PRE/XrarCore/common/signal/done"
 	"github.com/HZ-PRE/XrarCore/core"
 	"github.com/HZ-PRE/XrarCore/features/routing"
 	"github.com/HZ-PRE/XrarCore/transport"
@@ -63,18 +61,8 @@ func (s *Server) DispatchLink(ctx context.Context, dest net.Destination, link *t
 	if dest.Address != muxCoolAddress {
 		return s.dispatcher.DispatchLink(ctx, dest, link)
 	}
-	if d, ok := s.dispatcher.(routing.WrapLinkDispatcher); ok {
-		link = d.WrapLink(ctx, link)
-	}
-	worker, err := NewServerWorker(ctx, s.dispatcher, link)
-	if err != nil {
-		return err
-	}
-	select {
-	case <-ctx.Done():
-	case <-worker.done.Wait():
-	}
-	return nil
+	_, err := NewServerWorker(ctx, s.dispatcher, link)
+	return err
 }
 
 // Start implements common.Runnable.
@@ -91,8 +79,6 @@ type ServerWorker struct {
 	dispatcher     routing.Dispatcher
 	link           *transport.Link
 	sessionManager *SessionManager
-	done           *done.Instance
-	timer          *time.Ticker
 }
 
 func NewServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.Link) (*ServerWorker, error) {
@@ -100,14 +86,8 @@ func NewServerWorker(ctx context.Context, d routing.Dispatcher, link *transport.
 		dispatcher:     d,
 		link:           link,
 		sessionManager: NewSessionManager(),
-		done:           done.New(),
-		timer:          time.NewTicker(60 * time.Second),
-	}
-	if inbound := session.InboundFromContext(ctx); inbound != nil {
-		inbound.CanSpliceCopy = 3
 	}
 	go worker.run(ctx)
-	go worker.monitor()
 	return worker, nil
 }
 
@@ -122,40 +102,12 @@ func handle(ctx context.Context, s *Session, output buf.Writer) {
 	s.Close(false)
 }
 
-func (w *ServerWorker) monitor() {
-	defer w.timer.Stop()
-
-	for {
-		checkSize := w.sessionManager.Size()
-		checkCount := w.sessionManager.Count()
-		select {
-		case <-w.done.Wait():
-			w.sessionManager.Close()
-			common.Interrupt(w.link.Writer)
-			common.Interrupt(w.link.Reader)
-			return
-		case <-w.timer.C:
-			if w.sessionManager.CloseIfNoSessionAndIdle(checkSize, checkCount) {
-				common.Must(w.done.Close())
-			}
-		}
-	}
-}
-
 func (w *ServerWorker) ActiveConnections() uint32 {
 	return uint32(w.sessionManager.Size())
 }
 
 func (w *ServerWorker) Closed() bool {
-	return w.done.Done()
-}
-
-func (w *ServerWorker) WaitClosed() <-chan struct{} {
-	return w.done.Wait()
-}
-
-func (w *ServerWorker) Close() error {
-	return w.done.Close()
+	return w.sessionManager.Closed()
 }
 
 func (w *ServerWorker) handleStatusKeepAlive(meta *FrameMetadata, reader *buf.BufferedReader) error {
@@ -166,15 +118,6 @@ func (w *ServerWorker) handleStatusKeepAlive(meta *FrameMetadata, reader *buf.Bu
 }
 
 func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata, reader *buf.BufferedReader) error {
-	ctx = session.SubContextFromMuxInbound(ctx)
-	if meta.Inbound != nil && meta.Inbound.Source.IsValid() && meta.Inbound.Local.IsValid() {
-		if inbound := session.InboundFromContext(ctx); inbound != nil {
-			newInbound := *inbound
-			newInbound.Source = meta.Inbound.Source
-			newInbound.Local = meta.Inbound.Local
-			ctx = session.ContextWithInbound(ctx, &newInbound)
-		}
-	}
 	errors.LogInfo(ctx, "received request for ", meta.Target)
 	{
 		msg := &log.AccessMessage{
@@ -255,12 +198,11 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 			transferType: protocol.TransferTypePacket,
 			XUDP:         x,
 		}
+		go handle(ctx, x.Mux, w.link.Writer)
 		x.Status = Active
 		if !w.sessionManager.Add(x.Mux) {
 			x.Mux.Close(false)
-			return errors.New("failed to add new session")
 		}
-		go handle(ctx, x.Mux, w.link.Writer)
 		return nil
 	}
 
@@ -281,23 +223,18 @@ func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata,
 	if meta.Target.Network == net.Network_UDP {
 		s.transferType = protocol.TransferTypePacket
 	}
-	if !w.sessionManager.Add(s) {
-		s.Close(false)
-		return errors.New("failed to add new session")
-	}
+	w.sessionManager.Add(s)
 	go handle(ctx, s, w.link.Writer)
 	if !meta.Option.Has(OptionData) {
 		return nil
 	}
 
 	rr := s.NewReader(reader, &meta.Target)
-	err = buf.Copy(rr, s.output)
-
-	if err != nil && buf.IsWriteError(err) {
-		s.Close(false)
-		return buf.Copy(rr, buf.Discard)
+	if err := buf.Copy(rr, s.output); err != nil {
+		buf.Copy(rr, buf.Discard)
+		return s.Close(false)
 	}
-	return err
+	return nil
 }
 
 func (w *ServerWorker) handleStatusKeep(meta *FrameMetadata, reader *buf.BufferedReader) error {
@@ -338,7 +275,7 @@ func (w *ServerWorker) handleStatusEnd(meta *FrameMetadata, reader *buf.Buffered
 
 func (w *ServerWorker) handleFrame(ctx context.Context, reader *buf.BufferedReader) error {
 	var meta FrameMetadata
-	err := meta.Unmarshal(reader, session.IsReverseMuxFromContext(ctx))
+	err := meta.Unmarshal(reader)
 	if err != nil {
 		return errors.New("failed to read metadata").Base(err)
 	}
@@ -349,7 +286,7 @@ func (w *ServerWorker) handleFrame(ctx context.Context, reader *buf.BufferedRead
 	case SessionStatusEnd:
 		err = w.handleStatusEnd(&meta, reader)
 	case SessionStatusNew:
-		err = w.handleStatusNew(session.ContextWithIsReverseMux(ctx, false), &meta, reader)
+		err = w.handleStatusNew(ctx, &meta, reader)
 	case SessionStatusKeep:
 		err = w.handleStatusKeep(&meta, reader)
 	default:
@@ -364,11 +301,10 @@ func (w *ServerWorker) handleFrame(ctx context.Context, reader *buf.BufferedRead
 }
 
 func (w *ServerWorker) run(ctx context.Context) {
-	defer func() {
-		common.Must(w.done.Close())
-	}()
+	input := w.link.Reader
+	reader := &buf.BufferedReader{Reader: input}
 
-	reader := &buf.BufferedReader{Reader: w.link.Reader}
+	defer w.sessionManager.Close()
 
 	for {
 		select {
@@ -379,6 +315,7 @@ func (w *ServerWorker) run(ctx context.Context) {
 			if err != nil {
 				if errors.Cause(err) != io.EOF {
 					errors.LogInfoInner(ctx, err, "unexpected EOF")
+					common.Interrupt(input)
 				}
 				return
 			}

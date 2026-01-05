@@ -6,9 +6,9 @@ import (
 
 var cmdWG = &base.Command{
 	UsageLine: `{{.Exec}} wg [-i "private key (base64.StdEncoding)"]`,
-	Short:     `Generate key pair for X25519 key exchange (WireGuard)`,
+	Short:     `Generate key pair for wireguard key exchange`,
 	Long: `
-Generate key pair for X25519 key exchange (WireGuard).
+Generate key pair for wireguard key exchange.
 
 Random: {{.Exec}} wg
 

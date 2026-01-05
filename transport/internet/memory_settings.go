@@ -1,16 +1,12 @@
 package internet
 
-import "github.com/HZ-PRE/XrarCore/common/net"
-
-// MemoryStreamConfig is a parsed form of StreamConfig. It is used to reduce the number of Protobuf parses.
+// MemoryStreamConfig is a parsed form of StreamConfig. This is used to reduce the number of Protobuf parsings.
 type MemoryStreamConfig struct {
-	Destination      *net.Destination
 	ProtocolName     string
 	ProtocolSettings interface{}
 	SecurityType     string
 	SecuritySettings interface{}
 	SocketSettings   *SocketConfig
-	DownloadSettings *MemoryStreamConfig
 }
 
 // ToMemoryStreamConfig converts a StreamConfig to MemoryStreamConfig. It returns a default non-nil MemoryStreamConfig for nil input.
@@ -26,13 +22,6 @@ func ToMemoryStreamConfig(s *StreamConfig) (*MemoryStreamConfig, error) {
 	}
 
 	if s != nil {
-		if s.Address != nil {
-			mss.Destination = &net.Destination{
-				Address: s.Address.AsAddress(),
-				Port:    net.Port(s.Port),
-				Network: net.Network_TCP,
-			}
-		}
 		mss.SocketSettings = s.SocketSettings
 	}
 

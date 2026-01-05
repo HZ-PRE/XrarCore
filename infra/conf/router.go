@@ -14,6 +14,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+type RouterRulesConfig struct {
+	RuleList       []json.RawMessage `json:"rules"`
+	DomainStrategy string            `json:"domainStrategy"`
+}
+
 // StrategyConfig represents a strategy config
 type StrategyConfig struct {
 	Type     string           `json:"type"`
@@ -71,18 +76,25 @@ func (r *BalancingRule) Build() (*router.BalancingRule, error) {
 }
 
 type RouterConfig struct {
-	RuleList       []json.RawMessage `json:"rules"`
-	DomainStrategy *string           `json:"domainStrategy"`
-	Balancers      []*BalancingRule  `json:"balancers"`
+	Settings       *RouterRulesConfig `json:"settings"` // Deprecated
+	RuleList       []json.RawMessage  `json:"rules"`
+	DomainStrategy *string            `json:"domainStrategy"`
+	Balancers      []*BalancingRule   `json:"balancers"`
+
+	DomainMatcher string `json:"domainMatcher"`
 }
 
 func (c *RouterConfig) getDomainStrategy() router.Config_DomainStrategy {
 	ds := ""
 	if c.DomainStrategy != nil {
 		ds = *c.DomainStrategy
+	} else if c.Settings != nil {
+		ds = c.Settings.DomainStrategy
 	}
 
 	switch strings.ToLower(ds) {
+	case "alwaysip":
+		return router.Config_UseIp
 	case "ipifnonmatch":
 		return router.Config_IpIfNonMatch
 	case "ipondemand":
@@ -99,12 +111,20 @@ func (c *RouterConfig) Build() (*router.Config, error) {
 	var rawRuleList []json.RawMessage
 	if c != nil {
 		rawRuleList = c.RuleList
+		if c.Settings != nil {
+			c.RuleList = append(c.RuleList, c.Settings.RuleList...)
+			rawRuleList = c.RuleList
+		}
 	}
 
 	for _, rawRule := range rawRuleList {
 		rule, err := ParseRule(rawRule)
 		if err != nil {
 			return nil, err
+		}
+
+		if rule.DomainMatcher == "" {
+			rule.DomainMatcher = c.DomainMatcher
 		}
 
 		config.Rule = append(config.Rule, rule)
@@ -121,8 +141,11 @@ func (c *RouterConfig) Build() (*router.Config, error) {
 
 type RouterRule struct {
 	RuleTag     string `json:"ruleTag"`
+	Type        string `json:"type"`
 	OutboundTag string `json:"outboundTag"`
 	BalancerTag string `json:"balancerTag"`
+
+	DomainMatcher string `json:"domainMatcher"`
 }
 
 func ParseIP(s string) (*router.CIDR, error) {
@@ -525,16 +548,12 @@ func parseFieldRule(msg json.RawMessage) (*router.RoutingRule, error) {
 		IP         *StringList       `json:"ip"`
 		Port       *PortList         `json:"port"`
 		Network    *NetworkList      `json:"network"`
-		SourceIP   *StringList       `json:"sourceIP"`
-		Source     *StringList       `json:"source"`
+		SourceIP   *StringList       `json:"source"`
 		SourcePort *PortList         `json:"sourcePort"`
 		User       *StringList       `json:"user"`
-		VlessRoute *PortList         `json:"vlessRoute"`
 		InboundTag *StringList       `json:"inboundTag"`
 		Protocols  *StringList       `json:"protocol"`
 		Attributes map[string]string `json:"attrs"`
-		LocalIP    *StringList       `json:"localIP"`
-		LocalPort  *PortList         `json:"localPort"`
 	}
 	rawFieldRule := new(RawFieldRule)
 	err := json.Unmarshal(msg, rawFieldRule)
@@ -555,6 +574,10 @@ func parseFieldRule(msg json.RawMessage) (*router.RoutingRule, error) {
 		}
 	default:
 		return nil, errors.New("neither outboundTag nor balancerTag is specified in routing rule")
+	}
+
+	if rawFieldRule.DomainMatcher != "" {
+		rule.DomainMatcher = rawFieldRule.DomainMatcher
 	}
 
 	if rawFieldRule.Domain != nil {
@@ -593,10 +616,6 @@ func parseFieldRule(msg json.RawMessage) (*router.RoutingRule, error) {
 		rule.Networks = rawFieldRule.Network.Build()
 	}
 
-	if rawFieldRule.SourceIP == nil {
-		rawFieldRule.SourceIP = rawFieldRule.Source
-	}
-
 	if rawFieldRule.SourceIP != nil {
 		geoipList, err := ToCidrList(*rawFieldRule.SourceIP)
 		if err != nil {
@@ -609,26 +628,10 @@ func parseFieldRule(msg json.RawMessage) (*router.RoutingRule, error) {
 		rule.SourcePortList = rawFieldRule.SourcePort.Build()
 	}
 
-	if rawFieldRule.LocalIP != nil {
-		geoipList, err := ToCidrList(*rawFieldRule.LocalIP)
-		if err != nil {
-			return nil, err
-		}
-		rule.LocalGeoip = geoipList
-	}
-
-	if rawFieldRule.LocalPort != nil {
-		rule.LocalPortList = rawFieldRule.LocalPort.Build()
-	}
-
 	if rawFieldRule.User != nil {
 		for _, s := range *rawFieldRule.User {
 			rule.UserEmail = append(rule.UserEmail, s)
 		}
-	}
-
-	if rawFieldRule.VlessRoute != nil {
-		rule.VlessRouteList = rawFieldRule.VlessRoute.Build()
 	}
 
 	if rawFieldRule.InboundTag != nil {
@@ -656,10 +659,12 @@ func ParseRule(msg json.RawMessage) (*router.RoutingRule, error) {
 	if err != nil {
 		return nil, errors.New("invalid router rule").Base(err)
 	}
-
-	fieldrule, err := parseFieldRule(msg)
-	if err != nil {
-		return nil, errors.New("invalid field rule").Base(err)
+	if rawRule.Type == "" || strings.EqualFold(rawRule.Type, "field") {
+		fieldrule, err := parseFieldRule(msg)
+		if err != nil {
+			return nil, errors.New("invalid field rule").Base(err)
+		}
+		return fieldrule, nil
 	}
-	return fieldrule, nil
+	return nil, errors.New("unknown router rule type: ", rawRule.Type)
 }

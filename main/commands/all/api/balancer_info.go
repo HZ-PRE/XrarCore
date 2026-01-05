@@ -13,20 +13,25 @@ import (
 var cmdBalancerInfo = &base.Command{
 	CustomFlags: true,
 	UsageLine:   "{{.Exec}} api bi [--server=127.0.0.1:8080] [balancer]...",
-	Short:       "Retrieve balancer information",
+	Short:       "balancer information",
 	Long: `
-Retrieve information of specified balancers, including health, strategy and selecting.
-If no balancer tag specified, information for all balancers is returned.
+Get information of specified balancers, including health, strategy 
+and selecting. If no balancer tag specified, get information of 
+all balancers.
 
-> Ensure that "RoutingService" is enabled under "config.api.services" in the server configuration.
+> Make sure you have "RoutingService" set in "config.api.services" 
+of server config.
 
 Arguments:
+
+	-json
+		Use json output.
 
 	-s, -server <server:port>
 		The API server address. Default 127.0.0.1:8080
 
 	-t, -timeout <seconds>
-		Timeout in seconds for calling API. Default 3
+		Timeout seconds to call API. Default 3
 
 Example:
 

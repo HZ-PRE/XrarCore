@@ -1,5 +1,7 @@
 package inbound
 
+//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
+
 import (
 	"context"
 	"sync"
@@ -7,19 +9,18 @@ import (
 	"github.com/HZ-PRE/XrarCore/app/proxyman"
 	"github.com/HZ-PRE/XrarCore/common"
 	"github.com/HZ-PRE/XrarCore/common/errors"
-	"github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/common/serial"
 	"github.com/HZ-PRE/XrarCore/common/session"
 	"github.com/HZ-PRE/XrarCore/core"
 	"github.com/HZ-PRE/XrarCore/features/inbound"
 )
 
-// Manager manages all inbound handlers.
+// Manager is to manage all inbound handlers.
 type Manager struct {
-	access           sync.RWMutex
-	untaggedHandlers []inbound.Handler
-	taggedHandlers   map[string]inbound.Handler
-	running          bool
+	access          sync.RWMutex
+	untaggedHandler []inbound.Handler
+	taggedHandlers  map[string]inbound.Handler
+	running         bool
 }
 
 // New returns a new Manager for inbound handlers.
@@ -47,7 +48,7 @@ func (m *Manager) AddHandler(ctx context.Context, handler inbound.Handler) error
 		}
 		m.taggedHandlers[tag] = handler
 	} else {
-		m.untaggedHandlers = append(m.untaggedHandlers, handler)
+		m.untaggedHandler = append(m.untaggedHandler, handler)
 	}
 
 	if m.running {
@@ -89,21 +90,6 @@ func (m *Manager) RemoveHandler(ctx context.Context, tag string) error {
 	return common.ErrNoClue
 }
 
-// ListHandlers implements inbound.Manager.
-func (m *Manager) ListHandlers(ctx context.Context) []inbound.Handler {
-	m.access.RLock()
-	defer m.access.RUnlock()
-
-	response := make([]inbound.Handler, len(m.untaggedHandlers))
-	copy(response, m.untaggedHandlers)
-
-	for _, v := range m.taggedHandlers {
-		response = append(response, v)
-	}
-
-	return response
-}
-
 // Start implements common.Runnable.
 func (m *Manager) Start() error {
 	m.access.Lock()
@@ -117,7 +103,7 @@ func (m *Manager) Start() error {
 		}
 	}
 
-	for _, handler := range m.untaggedHandlers {
+	for _, handler := range m.untaggedHandler {
 		if err := handler.Start(); err != nil {
 			return err
 		}
@@ -138,7 +124,7 @@ func (m *Manager) Close() error {
 			errs = append(errs, err)
 		}
 	}
-	for _, handler := range m.untaggedHandlers {
+	for _, handler := range m.untaggedHandler {
 		if err := handler.Close(); err != nil {
 			errs = append(errs, err)
 		}
@@ -174,11 +160,16 @@ func NewHandler(ctx context.Context, config *core.InboundHandlerConfig) (inbound
 			Mark: streamSettings.SocketSettings.Mark,
 		})
 	}
-	if streamSettings != nil && streamSettings.ProtocolName == "splithttp" {
-		ctx = session.ContextWithAllowedNetwork(ctx, net.Network_UDP)
+
+	allocStrategy := receiverSettings.AllocationStrategy
+	if allocStrategy == nil || allocStrategy.Type == proxyman.AllocationStrategy_Always {
+		return NewAlwaysOnInboundHandler(ctx, tag, receiverSettings, proxySettings)
 	}
 
-	return NewAlwaysOnInboundHandler(ctx, tag, receiverSettings, proxySettings)
+	if allocStrategy.Type == proxyman.AllocationStrategy_Random {
+		return NewDynamicInboundHandler(ctx, tag, receiverSettings, proxySettings)
+	}
+	return nil, errors.New("unknown allocation strategy: ", receiverSettings.AllocationStrategy.Type).AtError()
 }
 
 func init() {

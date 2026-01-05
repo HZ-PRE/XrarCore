@@ -12,10 +12,17 @@ import (
 	"github.com/HZ-PRE/XrarCore/transport/internet/tagged"
 )
 
-func DialTaggedOutbound(ctx context.Context, dispatcher routing.Dispatcher, dest net.Destination, tag string) (net.Conn, error) {
+func DialTaggedOutbound(ctx context.Context, dest net.Destination, tag string) (net.Conn, error) {
+	var dispatcher routing.Dispatcher
 	if core.FromContext(ctx) == nil {
 		return nil, errors.New("Instance context variable is not in context, dial denied. ")
 	}
+	if err := core.RequireFeatures(ctx, func(dispatcherInstance routing.Dispatcher) {
+		dispatcher = dispatcherInstance
+	}); err != nil {
+		return nil, errors.New("Required Feature dispatcher not resolved").Base(err)
+	}
+
 	content := new(session.Content)
 	content.SkipDNSResolve = true
 

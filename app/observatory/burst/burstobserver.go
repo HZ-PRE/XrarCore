@@ -12,7 +12,6 @@ import (
 	"github.com/HZ-PRE/XrarCore/core"
 	"github.com/HZ-PRE/XrarCore/features/extension"
 	"github.com/HZ-PRE/XrarCore/features/outbound"
-	"github.com/HZ-PRE/XrarCore/features/routing"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -89,15 +88,13 @@ func (o *Observer) Close() error {
 
 func New(ctx context.Context, config *Config) (*Observer, error) {
 	var outboundManager outbound.Manager
-	var dispatcher routing.Dispatcher
-	err := core.RequireFeatures(ctx, func(om outbound.Manager, rd routing.Dispatcher) {
+	err := core.RequireFeatures(ctx, func(om outbound.Manager) {
 		outboundManager = om
-		dispatcher = rd
 	})
 	if err != nil {
 		return nil, errors.New("Cannot get depended features").Base(err)
 	}
-	hp := NewHealthPing(ctx, dispatcher, config.PingConfig)
+	hp := NewHealthPing(ctx, config.PingConfig)
 	return &Observer{
 		config: config,
 		ctx:    ctx,

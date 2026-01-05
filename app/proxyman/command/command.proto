@@ -37,27 +37,6 @@ message AlterInboundRequest {
 
 message AlterInboundResponse {}
 
-message ListInboundsRequest {
-  bool isOnlyTags = 1;
-}
-
-message ListInboundsResponse {
-  repeated core.InboundHandlerConfig inbounds = 1;
-}
-
-message GetInboundUserRequest {
-  string tag = 1;
-  string email = 2;
-}
-
-message GetInboundUserResponse {
-  repeated xray.common.protocol.User users = 1;
-}
-
-message GetInboundUsersCountResponse {
-  int64 count = 1;
-}
-
 message AddOutboundRequest {
   core.OutboundHandlerConfig outbound = 1;
 }
@@ -77,12 +56,6 @@ message AlterOutboundRequest {
 
 message AlterOutboundResponse {}
 
-message ListOutboundsRequest {}
-
-message ListOutboundsResponse {
-  repeated core.OutboundHandlerConfig outbounds = 1;
-}
-
 service HandlerService {
   rpc AddInbound(AddInboundRequest) returns (AddInboundResponse) {}
 
@@ -90,19 +63,11 @@ service HandlerService {
 
   rpc AlterInbound(AlterInboundRequest) returns (AlterInboundResponse) {}
 
-  rpc ListInbounds(ListInboundsRequest) returns (ListInboundsResponse) {}
-
-  rpc GetInboundUsers(GetInboundUserRequest) returns (GetInboundUserResponse) {}
-
-  rpc GetInboundUsersCount(GetInboundUserRequest) returns (GetInboundUsersCountResponse) {}
-
   rpc AddOutbound(AddOutboundRequest) returns (AddOutboundResponse) {}
 
   rpc RemoveOutbound(RemoveOutboundRequest) returns (RemoveOutboundResponse) {}
 
   rpc AlterOutbound(AlterOutboundRequest) returns (AlterOutboundResponse) {}
-
-  rpc ListOutbounds(ListOutboundsRequest) returns (ListOutboundsResponse) {}
 }
 
 message Config {}

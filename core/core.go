@@ -9,6 +9,8 @@
 // connections.
 package core
 
+//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
+
 import (
 	"fmt"
 	"runtime"
@@ -17,9 +19,9 @@ import (
 )
 
 var (
-	Version_x byte = 25
-	Version_y byte = 12
-	Version_z byte = 8
+	Version_x byte = 1
+	Version_y byte = 8
+	Version_z byte = 20
 )
 
 var (

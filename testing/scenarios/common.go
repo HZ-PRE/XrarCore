@@ -96,7 +96,6 @@ func InitializeServerConfig(config *core.Config) (*exec.Cmd, error) {
 
 var (
 	testBinaryPath    string
-	testBinaryCleanFn func()
 	testBinaryPathGen sync.Once
 )
 
@@ -109,7 +108,6 @@ func genTestBinaryPath() {
 				return err
 			}
 			tempDir = dir
-			testBinaryCleanFn = func() { os.RemoveAll(dir) }
 			return nil
 		}))
 		file := filepath.Join(tempDir, "xray.test")

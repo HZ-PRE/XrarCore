@@ -6,21 +6,15 @@ import (
 )
 
 type MetricsConfig struct {
-	Tag    string `json:"tag"`
-	Listen string `json:"listen"`
+	Tag string `json:"tag"`
 }
 
 func (c *MetricsConfig) Build() (*metrics.Config, error) {
-	if c.Listen == "" && c.Tag == "" {
-		return nil, errors.New("Metrics must have a tag or listen address.")
-	}
-	// If the tag is empty but have "listen" set a default "Metrics" for compatibility.
 	if c.Tag == "" {
-		c.Tag = "Metrics"
+		return nil, errors.New("metrics tag can't be empty.")
 	}
 
 	return &metrics.Config{
-		Tag:    c.Tag,
-		Listen: c.Listen,
+		Tag: c.Tag,
 	}, nil
 }

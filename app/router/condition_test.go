@@ -1,6 +1,8 @@
 package router_test
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -8,6 +10,7 @@ import (
 	"github.com/HZ-PRE/XrarCore/common"
 	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/HZ-PRE/XrarCore/common/net"
+	"github.com/HZ-PRE/XrarCore/common/platform"
 	"github.com/HZ-PRE/XrarCore/common/platform/filesystem"
 	"github.com/HZ-PRE/XrarCore/common/protocol"
 	"github.com/HZ-PRE/XrarCore/common/protocol/http"
@@ -16,6 +19,18 @@ import (
 	routing_session "github.com/HZ-PRE/XrarCore/features/routing/session"
 	"google.golang.org/protobuf/proto"
 )
+
+func init() {
+	wd, err := os.Getwd()
+	common.Must(err)
+
+	if _, err := os.Stat(platform.GetAssetLocation("geoip.dat")); err != nil && os.IsNotExist(err) {
+		common.Must(filesystem.CopyFile(platform.GetAssetLocation("geoip.dat"), filepath.Join(wd, "..", "..", "release", "config", "geoip.dat")))
+	}
+	if _, err := os.Stat(platform.GetAssetLocation("geosite.dat")); err != nil && os.IsNotExist(err) {
+		common.Must(filesystem.CopyFile(platform.GetAssetLocation("geosite.dat"), filepath.Join(wd, "..", "..", "release", "config", "geosite.dat")))
+	}
+}
 
 func withBackground() routing.Context {
 	return &routing_session.Context{}
@@ -93,6 +108,42 @@ func TestRoutingRule(t *testing.T) {
 		},
 		{
 			rule: &RoutingRule{
+				Cidr: []*CIDR{
+					{
+						Ip:     []byte{8, 8, 8, 8},
+						Prefix: 32,
+					},
+					{
+						Ip:     []byte{8, 8, 8, 8},
+						Prefix: 32,
+					},
+					{
+						Ip:     net.ParseAddress("2001:0db8:85a3:0000:0000:8a2e:0370:7334").IP(),
+						Prefix: 128,
+					},
+				},
+			},
+			test: []ruleTest{
+				{
+					input:  withOutbound(&session.Outbound{Target: net.TCPDestination(net.ParseAddress("8.8.8.8"), 80)}),
+					output: true,
+				},
+				{
+					input:  withOutbound(&session.Outbound{Target: net.TCPDestination(net.ParseAddress("8.8.4.4"), 80)}),
+					output: false,
+				},
+				{
+					input:  withOutbound(&session.Outbound{Target: net.TCPDestination(net.ParseAddress("2001:0db8:85a3:0000:0000:8a2e:0370:7334"), 80)}),
+					output: true,
+				},
+				{
+					input:  withBackground(),
+					output: false,
+				},
+			},
+		},
+		{
+			rule: &RoutingRule{
 				Geoip: []*GeoIP{
 					{
 						Cidr: []*CIDR{
@@ -133,14 +184,10 @@ func TestRoutingRule(t *testing.T) {
 		},
 		{
 			rule: &RoutingRule{
-				SourceGeoip: []*GeoIP{
+				SourceCidr: []*CIDR{
 					{
-						Cidr: []*CIDR{
-							{
-								Ip:     []byte{192, 168, 0, 0},
-								Prefix: 16,
-							},
-						},
+						Ip:     []byte{192, 168, 0, 0},
+						Prefix: 16,
 					},
 				},
 			},
@@ -301,15 +348,10 @@ func TestRoutingRule(t *testing.T) {
 }
 
 func loadGeoSite(country string) ([]*Domain, error) {
-	path, err := getAssetPath("geosite.dat")
+	geositeBytes, err := filesystem.ReadAsset("geosite.dat")
 	if err != nil {
 		return nil, err
 	}
-	geositeBytes, err := filesystem.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
 	var geositeList GeoSiteList
 	if err := proto.Unmarshal(geositeBytes, &geositeList); err != nil {
 		return nil, err
@@ -326,6 +368,9 @@ func loadGeoSite(country string) ([]*Domain, error) {
 
 func TestChinaSites(t *testing.T) {
 	domains, err := loadGeoSite("CN")
+	common.Must(err)
+
+	matcher, err := NewDomainMatcher(domains)
 	common.Must(err)
 
 	acMatcher, err := NewMphMatcherGroup(domains)
@@ -359,9 +404,12 @@ func TestChinaSites(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		r := acMatcher.ApplyDomain(testCase.Domain)
-		if r != testCase.Output {
-			t.Error("ACDomainMatcher expected output ", testCase.Output, " for domain ", testCase.Domain, " but got ", r)
+		r1 := matcher.ApplyDomain(testCase.Domain)
+		r2 := acMatcher.ApplyDomain(testCase.Domain)
+		if r1 != testCase.Output {
+			t.Error("DomainMatcher expected output ", testCase.Output, " for domain ", testCase.Domain, " but got ", r1)
+		} else if r2 != testCase.Output {
+			t.Error("ACDomainMatcher expected output ", testCase.Output, " for domain ", testCase.Domain, " but got ", r2)
 		}
 	}
 }
@@ -371,6 +419,48 @@ func BenchmarkMphDomainMatcher(b *testing.B) {
 	common.Must(err)
 
 	matcher, err := NewMphMatcherGroup(domains)
+	common.Must(err)
+
+	type TestCase struct {
+		Domain string
+		Output bool
+	}
+	testCases := []TestCase{
+		{
+			Domain: "163.com",
+			Output: true,
+		},
+		{
+			Domain: "163.com",
+			Output: true,
+		},
+		{
+			Domain: "164.com",
+			Output: false,
+		},
+		{
+			Domain: "164.com",
+			Output: false,
+		},
+	}
+
+	for i := 0; i < 1024; i++ {
+		testCases = append(testCases, TestCase{Domain: strconv.Itoa(i) + ".not-exists.com", Output: false})
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, testCase := range testCases {
+			_ = matcher.ApplyDomain(testCase.Domain)
+		}
+	}
+}
+
+func BenchmarkDomainMatcher(b *testing.B) {
+	domains, err := loadGeoSite("CN")
+	common.Must(err)
+
+	matcher, err := NewDomainMatcher(domains)
 	common.Must(err)
 
 	type TestCase struct {
@@ -447,7 +537,7 @@ func BenchmarkMultiGeoIPMatcher(b *testing.B) {
 		})
 	}
 
-	matcher, err := NewIPMatcher(geoips, MatcherAsType_Target)
+	matcher, err := NewMultiGeoIPMatcher(geoips, false)
 	common.Must(err)
 
 	ctx := withOutbound(&session.Outbound{Target: net.TCPDestination(net.ParseAddress("8.8.8.8"), 80)})

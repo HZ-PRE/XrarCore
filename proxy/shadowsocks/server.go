@@ -84,21 +84,6 @@ func (s *Server) RemoveUser(ctx context.Context, e string) error {
 	return s.validator.Del(e)
 }
 
-// GetUser implements proxy.UserManager.GetUser().
-func (s *Server) GetUser(ctx context.Context, email string) *protocol.MemoryUser {
-	return s.validator.GetByEmail(email)
-}
-
-// GetUsers implements proxy.UserManager.GetUsers().
-func (s *Server) GetUsers(ctx context.Context) []*protocol.MemoryUser {
-	return s.validator.GetAll()
-}
-
-// GetUsersCount implements proxy.UserManager.GetUsersCount().
-func (s *Server) GetUsersCount(context.Context) int64 {
-	return s.validator.GetCount()
-}
-
 func (s *Server) Network() []net.Network {
 	list := s.config.Network
 	if len(list) == 0 {
@@ -125,11 +110,11 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
 	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
 		request := protocol.RequestHeaderFromContext(ctx)
-		payload := packet.Payload
 		if request == nil {
-			payload.Release()
 			return
 		}
+
+		payload := packet.Payload
 
 		if payload.UDP != nil {
 			request = &protocol.RequestHeader{
@@ -145,11 +130,10 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			errors.LogWarningInner(ctx, err, "failed to encode UDP packet")
 			return
 		}
+		defer data.Release()
 
 		conn.Write(data.Bytes())
-		data.Release()
 	})
-	defer udpServer.RemoveRay()
 
 	inbound := session.InboundFromContext(ctx)
 	var dest *net.Destination

@@ -19,6 +19,7 @@ func TestDokodemoConfig(t *testing.T) {
 				"address": "8.8.8.8",
 				"port": 53,
 				"network": "tcp",
+				"timeout": 10,
 				"followRedirect": true,
 				"userLevel": 1
 			}`,
@@ -31,6 +32,7 @@ func TestDokodemoConfig(t *testing.T) {
 				},
 				Port:           53,
 				Networks:       []net.Network{net.Network_TCP},
+				Timeout:        10,
 				FollowRedirect: true,
 				UserLevel:      1,
 			},

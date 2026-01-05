@@ -7,7 +7,6 @@ import (
 
 	"github.com/HZ-PRE/XrarCore/common"
 	"github.com/HZ-PRE/XrarCore/common/buf"
-	c "github.com/HZ-PRE/XrarCore/common/ctx"
 	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/HZ-PRE/XrarCore/common/log"
 	"github.com/HZ-PRE/XrarCore/common/net"
@@ -31,10 +30,11 @@ type Server struct {
 }
 
 type routingInfo struct {
-	ctx        context.Context
-	dispatcher routing.Dispatcher
-	inboundTag *session.Inbound
-	contentTag *session.Content
+	ctx         context.Context
+	dispatcher  routing.Dispatcher
+	inboundTag  *session.Inbound
+	outboundTag *session.Outbound
+	contentTag  *session.Content
 }
 
 func NewServer(ctx context.Context, conf *DeviceConfig) (*Server, error) {
@@ -78,11 +78,18 @@ func (*Server) Network() []net.Network {
 
 // Process implements proxy.Inbound.
 func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Connection, dispatcher routing.Dispatcher) error {
+	inbound := session.InboundFromContext(ctx)
+	inbound.Name = "wireguard"
+	inbound.CanSpliceCopy = 3
+	outbounds := session.OutboundsFromContext(ctx)
+	ob := outbounds[len(outbounds)-1]
+
 	s.info = routingInfo{
-		ctx:        ctx,
-		dispatcher: dispatcher,
-		inboundTag: session.InboundFromContext(ctx),
-		contentTag: session.ContentFromContext(ctx),
+		ctx:         core.ToBackgroundDetachedContext(ctx),
+		dispatcher:  dispatcher,
+		inboundTag:  session.InboundFromContext(ctx),
+		outboundTag: ob,
+		contentTag:  session.ContentFromContext(ctx),
 	}
 
 	ep, err := s.bindServer.ParseEndpoint(conn.RemoteAddr().String())
@@ -127,25 +134,6 @@ func (s *Server) forwardConnection(dest net.Destination, conn net.Conn) {
 	defer conn.Close()
 
 	ctx, cancel := context.WithCancel(core.ToBackgroundDetachedContext(s.info.ctx))
-	sid := session.NewID()
-	ctx = c.ContextWithID(ctx, sid)
-	inbound := session.Inbound{} // since promiscuousModeHandler mixed-up context, we shallow copy inbound (tag) and content (configs)
-	if s.info.inboundTag != nil {
-		inbound = *s.info.inboundTag
-	}
-	inbound.Name = "wireguard"
-	inbound.CanSpliceCopy = 3
-
-	// overwrite the source to use the tun address for each sub context.
-	// Since gvisor.ForwarderRequest doesn't provide any info to associate the sub-context with the Parent context
-	// Currently we have no way to link to the original source address
-	inbound.Source = net.DestinationFromAddr(conn.RemoteAddr())
-	ctx = session.ContextWithInbound(ctx, &inbound)
-	if s.info.contentTag != nil {
-		ctx = session.ContextWithContent(ctx, s.info.contentTag)
-	}
-	ctx = session.SubContextFromMuxInbound(ctx)
-
 	plcy := s.policyManager.ForLevel(0)
 	timer := signal.CancelAfterInactivity(ctx, cancel, plcy.Timeouts.ConnectionIdle)
 
@@ -156,9 +144,19 @@ func (s *Server) forwardConnection(dest net.Destination, conn net.Conn) {
 		Reason: "",
 	})
 
+	if s.info.inboundTag != nil {
+		ctx = session.ContextWithInbound(ctx, s.info.inboundTag)
+	}
+	if s.info.outboundTag != nil {
+		ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{s.info.outboundTag})
+	}
+	if s.info.contentTag != nil {
+		ctx = session.ContextWithContent(ctx, s.info.contentTag)
+	}
+
 	link, err := s.info.dispatcher.Dispatch(ctx, dest)
 	if err != nil {
-		errors.LogErrorInner(ctx, err, "dispatch connection")
+		errors.LogErrorInner(s.info.ctx, err, "dispatch connection")
 	}
 	defer cancel()
 
@@ -184,7 +182,7 @@ func (s *Server) forwardConnection(dest net.Destination, conn net.Conn) {
 	if err := task.Run(ctx, requestDonePost, responseDone); err != nil {
 		common.Interrupt(link.Reader)
 		common.Interrupt(link.Writer)
-		errors.LogDebugInner(ctx, err, "connection ends")
+		errors.LogDebugInner(s.info.ctx, err, "connection ends")
 		return
 	}
 }

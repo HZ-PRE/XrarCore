@@ -8,21 +8,14 @@ import (
 var cmdSysStats = &base.Command{
 	CustomFlags: true,
 	UsageLine:   "{{.Exec}} api statssys [--server=127.0.0.1:8080]",
-	Short:       "Retrieve system statistics",
+	Short:       "Get system statistics",
 	Long: `
-Retrieve system statistics from Xray.
-
+Get system statistics from Xray.
 Arguments:
-
-	-s, -server <server:port>
+	-s, -server 
 		The API server address. Default 127.0.0.1:8080
-
-	-t, -timeout <seconds>
-		Timeout in seconds for calling API. Default 3
-
-Example:
-
-	{{.Exec}} {{.LongName}} --server=127.0.0.1:8080
+	-t, -timeout
+		Timeout seconds to call API. Default 3
 `,
 	Run: executeSysStats,
 }

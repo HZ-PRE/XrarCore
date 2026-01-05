@@ -79,10 +79,14 @@ message RoutingRule {
     // Tag of routing balancer.
     string balancing_tag = 12;
   }
-    string rule_tag = 19;
+    string rule_tag = 18;
 
   // List of domains for target domain matching.
   repeated Domain domain = 2;
+
+  // List of CIDRs for target IP address matching.
+  // Deprecated. Use geoip below.
+  repeated CIDR cidr = 3 [deprecated = true];
 
   // List of GeoIPs for target IP address matching. If this entry exists, the
   // cidr above will have no effect. GeoIP fields with the same country code are
@@ -90,11 +94,21 @@ message RoutingRule {
   // runtime. For customized GeoIPs, please leave country code empty.
   repeated GeoIP geoip = 10;
 
+  // A range of port [from, to]. If the destination port is in this range, this
+  // rule takes effect. Deprecated. Use port_list.
+  xray.common.net.PortRange port_range = 4 [deprecated = true];
+
   // List of ports.
   xray.common.net.PortList port_list = 14;
 
+  // List of networks. Deprecated. Use networks.
+  xray.common.net.NetworkList network_list = 5 [deprecated = true];
+
   // List of networks for matching.
   repeated xray.common.net.Network networks = 13;
+
+  // List of CIDRs for source IP address matching.
+  repeated CIDR source_cidr = 6 [deprecated = true];
 
   // List of GeoIPs for source IP address matching. If this entry exists, the
   // source_cidr above will have no effect.
@@ -109,10 +123,7 @@ message RoutingRule {
 
   map<string, string> attributes = 15;
 
-  repeated GeoIP local_geoip = 17;
-  xray.common.net.PortList local_port_list = 18;
-
-  xray.common.net.PortList vless_route_list = 20;
+  string domain_matcher = 17;
 }
 
 message BalancingRule {
@@ -147,8 +158,8 @@ message Config {
     // Use domain as is.
     AsIs = 0;
 
-    // [Deprecated] Always resolve IP for domains.
-    // UseIp = 1;
+    // Always resolve IP for domains.
+    UseIp = 1;
 
     // Resolve to IP if the domain doesn't match any rules.
     IpIfNonMatch = 2;

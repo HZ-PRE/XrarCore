@@ -3,6 +3,9 @@ package conf
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -18,11 +21,9 @@ import (
 
 var (
 	inboundConfigLoader = NewJSONConfigLoader(ConfigCreatorCache{
-		"tunnel":        func() interface{} { return new(DokodemoConfig) },
 		"dokodemo-door": func() interface{} { return new(DokodemoConfig) },
 		"http":          func() interface{} { return new(HTTPServerConfig) },
 		"shadowsocks":   func() interface{} { return new(ShadowsocksServerConfig) },
-		"mixed":         func() interface{} { return new(SocksServerConfig) },
 		"socks":         func() interface{} { return new(SocksServerConfig) },
 		"vless":         func() interface{} { return new(VLessInboundConfig) },
 		"vmess":         func() interface{} { return new(VMessInboundConfig) },
@@ -31,10 +32,8 @@ var (
 	}, "protocol", "settings")
 
 	outboundConfigLoader = NewJSONConfigLoader(ConfigCreatorCache{
-		"block":       func() interface{} { return new(BlackholeConfig) },
 		"blackhole":   func() interface{} { return new(BlackholeConfig) },
 		"loopback":    func() interface{} { return new(LoopbackConfig) },
-		"direct":      func() interface{} { return new(FreedomConfig) },
 		"freedom":     func() interface{} { return new(FreedomConfig) },
 		"http":        func() interface{} { return new(HTTPClientConfig) },
 		"shadowsocks": func() interface{} { return new(ShadowsocksClientConfig) },
@@ -45,7 +44,24 @@ var (
 		"dns":         func() interface{} { return new(DNSOutboundConfig) },
 		"wireguard":   func() interface{} { return &WireGuardConfig{IsClient: true} },
 	}, "protocol", "settings")
+
+	ctllog = log.New(os.Stderr, "xctl> ", 0)
 )
+
+func toProtocolList(s []string) ([]proxyman.KnownProtocols, error) {
+	kp := make([]proxyman.KnownProtocols, 0, 8)
+	for _, p := range s {
+		switch strings.ToLower(p) {
+		case "http":
+			kp = append(kp, proxyman.KnownProtocols_HTTP)
+		case "https", "tls", "ssl":
+			kp = append(kp, proxyman.KnownProtocols_TLS)
+		default:
+			return nil, errors.New("Unknown protocol: ", p)
+		}
+	}
+	return kp, nil
+}
 
 type SniffingConfig struct {
 	Enabled         bool        `json:"enabled"`
@@ -67,8 +83,10 @@ func (c *SniffingConfig) Build() (*proxyman.SniffingConfig, error) {
 				p = append(p, "tls")
 			case "quic":
 				p = append(p, "quic")
-			case "fakedns", "fakedns+others":
+			case "fakedns":
 				p = append(p, "fakedns")
+			case "fakedns+others":
+				p = append(p, "fakedns+others")
 			default:
 				return nil, errors.New("unknown protocol: ", protocol)
 			}
@@ -115,14 +133,50 @@ func (m *MuxConfig) Build() (*proxyman.MultiplexingConfig, error) {
 	}, nil
 }
 
+type InboundDetourAllocationConfig struct {
+	Strategy    string  `json:"strategy"`
+	Concurrency *uint32 `json:"concurrency"`
+	RefreshMin  *uint32 `json:"refresh"`
+}
+
+// Build implements Buildable.
+func (c *InboundDetourAllocationConfig) Build() (*proxyman.AllocationStrategy, error) {
+	config := new(proxyman.AllocationStrategy)
+	switch strings.ToLower(c.Strategy) {
+	case "always":
+		config.Type = proxyman.AllocationStrategy_Always
+	case "random":
+		config.Type = proxyman.AllocationStrategy_Random
+	case "external":
+		config.Type = proxyman.AllocationStrategy_External
+	default:
+		return nil, errors.New("unknown allocation strategy: ", c.Strategy)
+	}
+	if c.Concurrency != nil {
+		config.Concurrency = &proxyman.AllocationStrategy_AllocationStrategyConcurrency{
+			Value: *c.Concurrency,
+		}
+	}
+
+	if c.RefreshMin != nil {
+		config.Refresh = &proxyman.AllocationStrategy_AllocationStrategyRefresh{
+			Value: *c.RefreshMin,
+		}
+	}
+
+	return config, nil
+}
+
 type InboundDetourConfig struct {
-	Protocol       string           `json:"protocol"`
-	PortList       *PortList        `json:"port"`
-	ListenOn       *Address         `json:"listen"`
-	Settings       *json.RawMessage `json:"settings"`
-	Tag            string           `json:"tag"`
-	StreamSetting  *StreamConfig    `json:"streamSettings"`
-	SniffingConfig *SniffingConfig  `json:"sniffing"`
+	Protocol       string                         `json:"protocol"`
+	PortList       *PortList                      `json:"port"`
+	ListenOn       *Address                       `json:"listen"`
+	Settings       *json.RawMessage               `json:"settings"`
+	Tag            string                         `json:"tag"`
+	Allocation     *InboundDetourAllocationConfig `json:"allocate"`
+	StreamSetting  *StreamConfig                  `json:"streamSettings"`
+	DomainOverride *StringList                    `json:"domainOverride"`
+	SniffingConfig *SniffingConfig                `json:"sniffing"`
 }
 
 // Build implements Buildable.
@@ -157,6 +211,30 @@ func (c *InboundDetourConfig) Build() (*core.InboundHandlerConfig, error) {
 		}
 	}
 
+	if c.Allocation != nil {
+		concurrency := -1
+		if c.Allocation.Concurrency != nil && c.Allocation.Strategy == "random" {
+			concurrency = int(*c.Allocation.Concurrency)
+		}
+		portRange := 0
+
+		for _, pr := range c.PortList.Range {
+			portRange += int(pr.To - pr.From + 1)
+		}
+		if concurrency >= 0 && concurrency >= portRange {
+			var ports strings.Builder
+			for _, pr := range c.PortList.Range {
+				fmt.Fprintf(&ports, "%d-%d ", pr.From, pr.To)
+			}
+			return nil, errors.New("not enough ports. concurrency = ", concurrency, " ports: ", ports.String())
+		}
+
+		as, err := c.Allocation.Build()
+		if err != nil {
+			return nil, err
+		}
+		receiverSettings.AllocationStrategy = as
+	}
 	if c.StreamSetting != nil {
 		ss, err := c.StreamSetting.Build()
 		if err != nil {
@@ -171,6 +249,13 @@ func (c *InboundDetourConfig) Build() (*core.InboundHandlerConfig, error) {
 		}
 		receiverSettings.SniffingSettings = s
 	}
+	if c.DomainOverride != nil {
+		kp, err := toProtocolList(*c.DomainOverride)
+		if err != nil {
+			return nil, errors.New("failed to parse inbound detour config").Base(err)
+		}
+		receiverSettings.DomainOverride = kp
+	}
 
 	settings := []byte("{}")
 	if c.Settings != nil {
@@ -178,14 +263,14 @@ func (c *InboundDetourConfig) Build() (*core.InboundHandlerConfig, error) {
 	}
 	rawConfig, err := inboundConfigLoader.LoadWithID(settings, c.Protocol)
 	if err != nil {
-		return nil, errors.New("failed to load inbound detour config for protocol ", c.Protocol).Base(err)
+		return nil, errors.New("failed to load inbound detour config.").Base(err)
 	}
 	if dokodemoConfig, ok := rawConfig.(*DokodemoConfig); ok {
-		receiverSettings.ReceiveOriginalDestination = dokodemoConfig.FollowRedirect
+		receiverSettings.ReceiveOriginalDestination = dokodemoConfig.Redirect
 	}
 	ts, err := rawConfig.(Buildable).Build()
 	if err != nil {
-		return nil, errors.New("failed to build inbound handler for protocol ", c.Protocol).Base(err)
+		return nil, err
 	}
 
 	return &core.InboundHandlerConfig{
@@ -196,14 +281,13 @@ func (c *InboundDetourConfig) Build() (*core.InboundHandlerConfig, error) {
 }
 
 type OutboundDetourConfig struct {
-	Protocol       string           `json:"protocol"`
-	SendThrough    *string          `json:"sendThrough"`
-	Tag            string           `json:"tag"`
-	Settings       *json.RawMessage `json:"settings"`
-	StreamSetting  *StreamConfig    `json:"streamSettings"`
-	ProxySettings  *ProxyConfig     `json:"proxySettings"`
-	MuxSettings    *MuxConfig       `json:"mux"`
-	TargetStrategy string           `json:"targetStrategy"`
+	Protocol      string           `json:"protocol"`
+	SendThrough   *string          `json:"sendThrough"`
+	Tag           string           `json:"tag"`
+	Settings      *json.RawMessage `json:"settings"`
+	StreamSetting *StreamConfig    `json:"streamSettings"`
+	ProxySettings *ProxyConfig     `json:"proxySettings"`
+	MuxSettings   *MuxConfig       `json:"mux"`
 }
 
 func (c *OutboundDetourConfig) checkChainProxyConfig() error {
@@ -219,32 +303,6 @@ func (c *OutboundDetourConfig) checkChainProxyConfig() error {
 // Build implements Buildable.
 func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 	senderSettings := &proxyman.SenderConfig{}
-	switch strings.ToLower(c.TargetStrategy) {
-	case "asis", "":
-		senderSettings.TargetStrategy = internet.DomainStrategy_AS_IS
-	case "useip":
-		senderSettings.TargetStrategy = internet.DomainStrategy_USE_IP
-	case "useipv4":
-		senderSettings.TargetStrategy = internet.DomainStrategy_USE_IP4
-	case "useipv6":
-		senderSettings.TargetStrategy = internet.DomainStrategy_USE_IP6
-	case "useipv4v6":
-		senderSettings.TargetStrategy = internet.DomainStrategy_USE_IP46
-	case "useipv6v4":
-		senderSettings.TargetStrategy = internet.DomainStrategy_USE_IP64
-	case "forceip":
-		senderSettings.TargetStrategy = internet.DomainStrategy_FORCE_IP
-	case "forceipv4":
-		senderSettings.TargetStrategy = internet.DomainStrategy_FORCE_IP4
-	case "forceipv6":
-		senderSettings.TargetStrategy = internet.DomainStrategy_FORCE_IP6
-	case "forceipv4v6":
-		senderSettings.TargetStrategy = internet.DomainStrategy_FORCE_IP46
-	case "forceipv6v4":
-		senderSettings.TargetStrategy = internet.DomainStrategy_FORCE_IP64
-	default:
-		return nil, errors.New("unsupported target domain strategy: ", c.TargetStrategy)
-	}
 	if err := c.checkChainProxyConfig(); err != nil {
 		return nil, err
 	}
@@ -256,10 +314,7 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 			senderSettings.ViaCidr = strings.Split(*c.SendThrough, "/")[1]
 		} else {
 			if address.Family().IsDomain() {
-				domain := address.Address.Domain()
-				if domain != "origin" && domain != "srcip" {
-					return nil, errors.New("unable to send through: " + address.String())
-				}
+				return nil, errors.New("unable to send through: " + address.String())
 			}
 		}
 		senderSettings.Via = address.Build()
@@ -268,7 +323,7 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 	if c.StreamSetting != nil {
 		ss, err := c.StreamSetting.Build()
 		if err != nil {
-			return nil, errors.New("failed to build stream settings for outbound detour").Base(err)
+			return nil, err
 		}
 		senderSettings.StreamSettings = ss
 	}
@@ -276,7 +331,7 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 	if c.ProxySettings != nil {
 		ps, err := c.ProxySettings.Build()
 		if err != nil {
-			return nil, errors.New("invalid outbound detour proxy settings").Base(err)
+			return nil, errors.New("invalid outbound detour proxy settings.").Base(err)
 		}
 		if ps.TransportLayerProxy {
 			if senderSettings.StreamSettings != nil {
@@ -296,7 +351,7 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 	if c.MuxSettings != nil {
 		ms, err := c.MuxSettings.Build()
 		if err != nil {
-			return nil, errors.New("failed to build Mux config").Base(err)
+			return nil, errors.New("failed to build Mux config.").Base(err)
 		}
 		senderSettings.MultiplexSettings = ms
 	}
@@ -307,11 +362,11 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 	}
 	rawConfig, err := outboundConfigLoader.LoadWithID(settings, c.Protocol)
 	if err != nil {
-		return nil, errors.New("failed to load outbound detour config for protocol ", c.Protocol).Base(err)
+		return nil, errors.New("failed to parse to outbound detour config.").Base(err)
 	}
 	ts, err := rawConfig.(Buildable).Build()
 	if err != nil {
-		return nil, errors.New("failed to build outbound handler for protocol ", c.Protocol).Base(err)
+		return nil, err
 	}
 
 	return &core.OutboundHandlerConfig{
@@ -329,15 +384,33 @@ func (c *StatsConfig) Build() (*stats.Config, error) {
 }
 
 type Config struct {
-	// Deprecated: Global transport config is no longer used
-	// left for returning error
-	Transport map[string]json.RawMessage `json:"transport"`
+	// Port of this Point server.
+	// Deprecated: Port exists for historical compatibility
+	// and should not be used.
+	Port uint16 `json:"port"`
+
+	// Deprecated: InboundConfig exists for historical compatibility
+	// and should not be used.
+	InboundConfig *InboundDetourConfig `json:"inbound"`
+
+	// Deprecated: OutboundConfig exists for historical compatibility
+	// and should not be used.
+	OutboundConfig *OutboundDetourConfig `json:"outbound"`
+
+	// Deprecated: InboundDetours exists for historical compatibility
+	// and should not be used.
+	InboundDetours []InboundDetourConfig `json:"inboundDetour"`
+
+	// Deprecated: OutboundDetours exists for historical compatibility
+	// and should not be used.
+	OutboundDetours []OutboundDetourConfig `json:"outboundDetour"`
 
 	LogConfig        *LogConfig              `json:"log"`
 	RouterConfig     *RouterConfig           `json:"routing"`
 	DNSConfig        *DNSConfig              `json:"dns"`
 	InboundConfigs   []InboundDetourConfig   `json:"inbounds"`
 	OutboundConfigs  []OutboundDetourConfig  `json:"outbounds"`
+	Transport        *TransportConfig        `json:"transport"`
 	Policy           *PolicyConfig           `json:"policy"`
 	API              *APIConfig              `json:"api"`
 	Metrics          *MetricsConfig          `json:"metrics"`
@@ -346,7 +419,6 @@ type Config struct {
 	FakeDNS          *FakeDNSConfig          `json:"fakeDns"`
 	Observatory      *ObservatoryConfig      `json:"observatory"`
 	BurstObservatory *BurstObservatoryConfig `json:"burstObservatory"`
-	Version          *VersionConfig          `json:"version"`
 }
 
 func (c *Config) findInboundTag(tag string) int {
@@ -415,9 +487,20 @@ func (c *Config) Override(o *Config, fn string) {
 		c.BurstObservatory = o.BurstObservatory
 	}
 
-	if o.Version != nil {
-		c.Version = o.Version
+	// deprecated attrs... keep them for now
+	if o.InboundConfig != nil {
+		c.InboundConfig = o.InboundConfig
 	}
+	if o.OutboundConfig != nil {
+		c.OutboundConfig = o.OutboundConfig
+	}
+	if o.InboundDetours != nil {
+		c.InboundDetours = o.InboundDetours
+	}
+	if o.OutboundDetours != nil {
+		c.OutboundDetours = o.OutboundDetours
+	}
+	// deprecated attrs
 
 	// update the Inbound in slice if the only one in override config has same tag
 	if len(o.InboundConfigs) > 0 {
@@ -457,10 +540,34 @@ func (c *Config) Override(o *Config, fn string) {
 	}
 }
 
+func applyTransportConfig(s *StreamConfig, t *TransportConfig) {
+	if s.TCPSettings == nil {
+		s.TCPSettings = t.TCPConfig
+	}
+	if s.KCPSettings == nil {
+		s.KCPSettings = t.KCPConfig
+	}
+	if s.WSSettings == nil {
+		s.WSSettings = t.WSConfig
+	}
+	if s.HTTPSettings == nil {
+		s.HTTPSettings = t.HTTPConfig
+	}
+	if s.DSSettings == nil {
+		s.DSSettings = t.DSConfig
+	}
+	if s.HTTPUPGRADESettings == nil {
+		s.HTTPUPGRADESettings = t.HTTPUPGRADEConfig
+	}
+	if s.SplitHTTPSettings == nil {
+		s.SplitHTTPSettings = t.SplitHTTPConfig
+	}
+}
+
 // Build implements Buildable.
 func (c *Config) Build() (*core.Config, error) {
 	if err := PostProcessConfigureFile(c); err != nil {
-		return nil, errors.New("failed to post-process configuration file").Base(err)
+		return nil, err
 	}
 
 	config := &core.Config{
@@ -474,21 +581,21 @@ func (c *Config) Build() (*core.Config, error) {
 	if c.API != nil {
 		apiConf, err := c.API.Build()
 		if err != nil {
-			return nil, errors.New("failed to build API configuration").Base(err)
+			return nil, err
 		}
 		config.App = append(config.App, serial.ToTypedMessage(apiConf))
 	}
 	if c.Metrics != nil {
 		metricsConf, err := c.Metrics.Build()
 		if err != nil {
-			return nil, errors.New("failed to build metrics configuration").Base(err)
+			return nil, err
 		}
 		config.App = append(config.App, serial.ToTypedMessage(metricsConf))
 	}
 	if c.Stats != nil {
 		statsConf, err := c.Stats.Build()
 		if err != nil {
-			return nil, errors.New("failed to build stats configuration").Base(err)
+			return nil, err
 		}
 		config.App = append(config.App, serial.ToTypedMessage(statsConf))
 	}
@@ -506,7 +613,7 @@ func (c *Config) Build() (*core.Config, error) {
 	if c.RouterConfig != nil {
 		routerConfig, err := c.RouterConfig.Build()
 		if err != nil {
-			return nil, errors.New("failed to build routing configuration").Base(err)
+			return nil, err
 		}
 		config.App = append(config.App, serial.ToTypedMessage(routerConfig))
 	}
@@ -514,7 +621,7 @@ func (c *Config) Build() (*core.Config, error) {
 	if c.DNSConfig != nil {
 		dnsApp, err := c.DNSConfig.Build()
 		if err != nil {
-			return nil, errors.New("failed to build DNS configuration").Base(err)
+			return nil, errors.New("failed to parse DNS config").Base(err)
 		}
 		config.App = append(config.App, serial.ToTypedMessage(dnsApp))
 	}
@@ -522,7 +629,7 @@ func (c *Config) Build() (*core.Config, error) {
 	if c.Policy != nil {
 		pc, err := c.Policy.Build()
 		if err != nil {
-			return nil, errors.New("failed to build policy configuration").Base(err)
+			return nil, err
 		}
 		config.App = append(config.App, serial.ToTypedMessage(pc))
 	}
@@ -530,7 +637,7 @@ func (c *Config) Build() (*core.Config, error) {
 	if c.Reverse != nil {
 		r, err := c.Reverse.Build()
 		if err != nil {
-			return nil, errors.New("failed to build reverse configuration").Base(err)
+			return nil, err
 		}
 		config.App = append(config.App, serial.ToTypedMessage(r))
 	}
@@ -538,7 +645,7 @@ func (c *Config) Build() (*core.Config, error) {
 	if c.FakeDNS != nil {
 		r, err := c.FakeDNS.Build()
 		if err != nil {
-			return nil, errors.New("failed to build fake DNS configuration").Base(err)
+			return nil, err
 		}
 		config.App = append([]*serial.TypedMessage{serial.ToTypedMessage(r)}, config.App...)
 	}
@@ -546,7 +653,7 @@ func (c *Config) Build() (*core.Config, error) {
 	if c.Observatory != nil {
 		r, err := c.Observatory.Build()
 		if err != nil {
-			return nil, errors.New("failed to build observatory configuration").Base(err)
+			return nil, err
 		}
 		config.App = append(config.App, serial.ToTypedMessage(r))
 	}
@@ -554,47 +661,71 @@ func (c *Config) Build() (*core.Config, error) {
 	if c.BurstObservatory != nil {
 		r, err := c.BurstObservatory.Build()
 		if err != nil {
-			return nil, errors.New("failed to build burst observatory configuration").Base(err)
-		}
-		config.App = append(config.App, serial.ToTypedMessage(r))
-	}
-
-	if c.Version != nil {
-		r, err := c.Version.Build()
-		if err != nil {
-			return nil, errors.New("failed to build version configuration").Base(err)
+			return nil, err
 		}
 		config.App = append(config.App, serial.ToTypedMessage(r))
 	}
 
 	var inbounds []InboundDetourConfig
 
+	if c.InboundConfig != nil {
+		inbounds = append(inbounds, *c.InboundConfig)
+	}
+
+	if len(c.InboundDetours) > 0 {
+		inbounds = append(inbounds, c.InboundDetours...)
+	}
+
 	if len(c.InboundConfigs) > 0 {
 		inbounds = append(inbounds, c.InboundConfigs...)
 	}
 
-	if len(c.Transport) > 0 {
-		return nil, errors.PrintRemovedFeatureError("Global transport config", "streamSettings in inbounds and outbounds")
+	// Backward compatibility.
+	if len(inbounds) > 0 && inbounds[0].PortList == nil && c.Port > 0 {
+		inbounds[0].PortList = &PortList{[]PortRange{{
+			From: uint32(c.Port),
+			To:   uint32(c.Port),
+		}}}
 	}
 
 	for _, rawInboundConfig := range inbounds {
+		if c.Transport != nil {
+			if rawInboundConfig.StreamSetting == nil {
+				rawInboundConfig.StreamSetting = &StreamConfig{}
+			}
+			applyTransportConfig(rawInboundConfig.StreamSetting, c.Transport)
+		}
 		ic, err := rawInboundConfig.Build()
 		if err != nil {
-			return nil, errors.New("failed to build inbound config with tag ", rawInboundConfig.Tag).Base(err)
+			return nil, err
 		}
 		config.Inbound = append(config.Inbound, ic)
 	}
 
 	var outbounds []OutboundDetourConfig
 
+	if c.OutboundConfig != nil {
+		outbounds = append(outbounds, *c.OutboundConfig)
+	}
+
+	if len(c.OutboundDetours) > 0 {
+		outbounds = append(outbounds, c.OutboundDetours...)
+	}
+
 	if len(c.OutboundConfigs) > 0 {
 		outbounds = append(outbounds, c.OutboundConfigs...)
 	}
 
 	for _, rawOutboundConfig := range outbounds {
+		if c.Transport != nil {
+			if rawOutboundConfig.StreamSetting == nil {
+				rawOutboundConfig.StreamSetting = &StreamConfig{}
+			}
+			applyTransportConfig(rawOutboundConfig.StreamSetting, c.Transport)
+		}
 		oc, err := rawOutboundConfig.Build()
 		if err != nil {
-			return nil, errors.New("failed to build outbound config with tag ", rawOutboundConfig.Tag).Base(err)
+			return nil, err
 		}
 		config.Outbound = append(config.Outbound, oc)
 	}

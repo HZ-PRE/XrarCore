@@ -91,17 +91,15 @@ func TestUDPDNSTunnel(t *testing.T) {
 	config := &core.Config{
 		App: []*serial.TypedMessage{
 			serial.ToTypedMessage(&dnsapp.Config{
-				NameServer: []*dnsapp.NameServer{
+				NameServers: []*net.Endpoint{
 					{
-						Address: &net.Endpoint{
-							Network: net.Network_UDP,
-							Address: &net.IPOrDomain{
-								Address: &net.IPOrDomain_Ip{
-									Ip: []byte{127, 0, 0, 1},
-								},
+						Network: net.Network_UDP,
+						Address: &net.IPOrDomain{
+							Address: &net.IPOrDomain_Ip{
+								Ip: []byte{127, 0, 0, 1},
 							},
-							Port: uint32(port),
 						},
+						Port: uint32(port),
 					},
 				},
 			}),

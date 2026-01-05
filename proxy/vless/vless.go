@@ -5,7 +5,8 @@
 // clients with 'socks' for proxying.
 package vless
 
+//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
+
 const (
-	None = "none"
-	XRV  = "xtls-rprx-vision"
+	XRV = "xtls-rprx-vision"
 )

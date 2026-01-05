@@ -2,13 +2,10 @@ package burst
 
 import (
 	"context"
-	"fmt"
-	"io"
 	"net/http"
 	"time"
 
 	"github.com/HZ-PRE/XrarCore/common/net"
-	"github.com/HZ-PRE/XrarCore/features/routing"
 	"github.com/HZ-PRE/XrarCore/transport/internet/tagged"
 )
 
@@ -17,10 +14,10 @@ type pingClient struct {
 	httpClient  *http.Client
 }
 
-func newPingClient(ctx context.Context, dispatcher routing.Dispatcher, destination string, timeout time.Duration, handler string) *pingClient {
+func newPingClient(ctx context.Context, destination string, timeout time.Duration, handler string) *pingClient {
 	return &pingClient{
 		destination: destination,
-		httpClient:  newHTTPClient(ctx, dispatcher, handler, timeout),
+		httpClient:  newHTTPClient(ctx, handler, timeout),
 	}
 }
 
@@ -31,7 +28,7 @@ func newDirectPingClient(destination string, timeout time.Duration) *pingClient 
 	}
 }
 
-func newHTTPClient(ctxv context.Context, dispatcher routing.Dispatcher, handler string, timeout time.Duration) *http.Client {
+func newHTTPClient(ctxv context.Context, handler string, timeout time.Duration) *http.Client {
 	tr := &http.Transport{
 		DisableKeepAlives: true,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -39,7 +36,7 @@ func newHTTPClient(ctxv context.Context, dispatcher routing.Dispatcher, handler 
 			if err != nil {
 				return nil, err
 			}
-			return tagged.Dialer(ctxv, dispatcher, dest, handler)
+			return tagged.Dialer(ctxv, dest, handler)
 		},
 	}
 	return &http.Client{
@@ -53,27 +50,20 @@ func newHTTPClient(ctxv context.Context, dispatcher routing.Dispatcher, handler 
 }
 
 // MeasureDelay returns the delay time of the request to dest
-func (s *pingClient) MeasureDelay(httpMethod string) (time.Duration, error) {
+func (s *pingClient) MeasureDelay() (time.Duration, error) {
 	if s.httpClient == nil {
-		return rttFailed, fmt.Errorf("pingClient not initialized")
+		panic("pingClient no initialized")
 	}
-	req, err := http.NewRequest(httpMethod, s.destination, nil)
+	req, err := http.NewRequest(http.MethodHead, s.destination, nil)
 	if err != nil {
 		return rttFailed, err
 	}
-
 	start := time.Now()
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return rttFailed, err
 	}
-	if httpMethod == http.MethodGet {
-		_, err = io.Copy(io.Discard, resp.Body)
-		if err != nil {
-			return rttFailed, err
-		}
-	}
+	// don't wait for body
 	resp.Body.Close()
-
 	return time.Since(start), nil
 }

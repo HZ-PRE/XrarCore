@@ -120,9 +120,9 @@ func writeFile(content []byte, name string) error {
 func printFile(certificate *cert.Certificate, name string) error {
 	certPEM, keyPEM := certificate.ToPEM()
 	return task.Run(context.Background(), func() error {
-		return writeFile(certPEM, name+".crt")
+		return writeFile(certPEM, name+"_cert.pem")
 	}, func() error {
-		return writeFile(keyPEM, name+".key")
+		return writeFile(keyPEM, name+"_key.pem")
 	})
 }
 

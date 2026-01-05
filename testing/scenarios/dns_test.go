@@ -16,7 +16,6 @@ import (
 	"github.com/HZ-PRE/XrarCore/proxy/freedom"
 	"github.com/HZ-PRE/XrarCore/proxy/socks"
 	"github.com/HZ-PRE/XrarCore/testing/servers/tcp"
-	"github.com/HZ-PRE/XrarCore/transport/internet"
 	xproxy "golang.org/x/net/proxy"
 )
 
@@ -32,26 +31,18 @@ func TestResolveIP(t *testing.T) {
 	serverConfig := &core.Config{
 		App: []*serial.TypedMessage{
 			serial.ToTypedMessage(&dns.Config{
-				StaticHosts: []*dns.Config_HostMapping{
-					{
-						Type:   dns.DomainMatchingType_Full,
-						Domain: "google.com",
-						Ip:     [][]byte{dest.Address.IP()},
-					},
+				Hosts: map[string]*net.IPOrDomain{
+					"google.com": net.NewIPOrDomain(dest.Address),
 				},
 			}),
 			serial.ToTypedMessage(&router.Config{
 				DomainStrategy: router.Config_IpIfNonMatch,
 				Rule: []*router.RoutingRule{
 					{
-						Geoip: []*router.GeoIP{
+						Cidr: []*router.CIDR{
 							{
-								Cidr: []*router.CIDR{
-									{
-										Ip:     []byte{127, 0, 0, 0},
-										Prefix: 8,
-									},
-								},
+								Ip:     []byte{127, 0, 0, 0},
+								Prefix: 8,
 							},
 						},
 						TargetTag: &router.RoutingRule_Tag{
@@ -84,7 +75,7 @@ func TestResolveIP(t *testing.T) {
 			{
 				Tag: "direct",
 				ProxySettings: serial.ToTypedMessage(&freedom.Config{
-					DomainStrategy: internet.DomainStrategy_USE_IP,
+					DomainStrategy: freedom.Config_USE_IP,
 				}),
 			},
 		},

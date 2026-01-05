@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"go/build"
@@ -19,7 +18,7 @@ var directory = flag.String("pwd", "", "Working directory of Xray vformat.")
 func envFile() (string, error) {
 	if file := os.Getenv("GOENV"); file != "" {
 		if file == "off" {
-			return "", errors.New("GOENV=off")
+			return "", fmt.Errorf("GOENV=off")
 		}
 		return file, nil
 	}
@@ -28,7 +27,7 @@ func envFile() (string, error) {
 		return "", err
 	}
 	if dir == "" {
-		return "", errors.New("missing user-config dir")
+		return "", fmt.Errorf("missing user-config dir")
 	}
 	return filepath.Join(dir, "go", "env"), nil
 }
@@ -41,7 +40,7 @@ func GetRuntimeEnv(key string) (string, error) {
 		return "", err
 	}
 	if file == "" {
-		return "", errors.New("missing runtime env file")
+		return "", fmt.Errorf("missing runtime env file")
 	}
 	var data []byte
 	var runtimeEnv string

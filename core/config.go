@@ -2,7 +2,6 @@ package core
 
 import (
 	"io"
-	"slices"
 	"strings"
 
 	"github.com/HZ-PRE/XrarCore/common"
@@ -20,19 +19,14 @@ type ConfigFormat struct {
 	Loader    ConfigLoader
 }
 
-type ConfigSource struct {
-	Name   string
-	Format string
-}
-
 // ConfigLoader is a utility to load Xray config from external source.
 type ConfigLoader func(input interface{}) (*Config, error)
 
 // ConfigBuilder is a builder to build core.Config from filenames and formats
-type ConfigBuilder func(files []*ConfigSource) (*Config, error)
+type ConfigBuilder func(files []string, formats []string) (*Config, error)
 
-// ConfigsMerger merges multiple json configs into a single one
-type ConfigsMerger func(files []*ConfigSource) (string, error)
+// ConfigsMerger merge multiple json configs into on config
+type ConfigsMerger func(files []string, formats []string) (string, error)
 
 var (
 	configLoaderByName    = make(map[string]*ConfigFormat)
@@ -61,18 +55,20 @@ func RegisterConfigLoader(format *ConfigFormat) error {
 }
 
 func GetMergedConfig(args cmdarg.Arg) (string, error) {
-	var files []*ConfigSource
+	files := make([]string, 0)
+	formats := make([]string, 0)
 	supported := []string{"json", "yaml", "toml"}
 	for _, file := range args {
-		format := GetFormat(file)
-		if slices.Contains(supported, format) {
-			files = append(files, &ConfigSource{
-				Name:   file,
-				Format: format,
-			})
+		format := getFormat(file)
+		for _, s := range supported {
+			if s == format {
+				files = append(files, file)
+				formats = append(formats, format)
+				break
+			}
 		}
 	}
-	return ConfigMergedFormFiles(files)
+	return ConfigMergedFormFiles(files, formats)
 }
 
 func GetFormatByExtension(ext string) string {
@@ -98,21 +94,21 @@ func getExtension(filename string) string {
 	return filename[idx+1:]
 }
 
-func GetFormat(filename string) string {
+func getFormat(filename string) string {
 	return GetFormatByExtension(getExtension(filename))
 }
 
 func LoadConfig(formatName string, input interface{}) (*Config, error) {
 	switch v := input.(type) {
 	case cmdarg.Arg:
-		files := make([]*ConfigSource, len(v))
+		formats := make([]string, len(v))
 		hasProtobuf := false
 		for i, file := range v {
 			var f string
 
 			if formatName == "auto" {
 				if file != "stdin:" {
-					f = GetFormat(file)
+					f = getFormat(file)
 				} else {
 					f = "json"
 				}
@@ -127,10 +123,7 @@ func LoadConfig(formatName string, input interface{}) (*Config, error) {
 			if f == "protobuf" {
 				hasProtobuf = true
 			}
-			files[i] = &ConfigSource{
-				Name:   file,
-				Format: f,
-			}
+			formats[i] = f
 		}
 
 		// only one protobuf config file is allowed
@@ -143,7 +136,8 @@ func LoadConfig(formatName string, input interface{}) (*Config, error) {
 		}
 
 		// to avoid import cycle
-		return ConfigBuilderForFiles(files)
+		return ConfigBuilderForFiles(v, formats)
+
 	case io.Reader:
 		if f, found := configLoaderByName[formatName]; found {
 			return f.Loader(v)

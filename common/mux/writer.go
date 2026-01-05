@@ -6,7 +6,6 @@ import (
 	"github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/common/protocol"
 	"github.com/HZ-PRE/XrarCore/common/serial"
-	"github.com/HZ-PRE/XrarCore/common/session"
 )
 
 type Writer struct {
@@ -17,10 +16,9 @@ type Writer struct {
 	hasError     bool
 	transferType protocol.TransferType
 	globalID     [8]byte
-	inbound      *session.Inbound
 }
 
-func NewWriter(id uint16, dest net.Destination, writer buf.Writer, transferType protocol.TransferType, globalID [8]byte, inbound *session.Inbound) *Writer {
+func NewWriter(id uint16, dest net.Destination, writer buf.Writer, transferType protocol.TransferType, globalID [8]byte) *Writer {
 	return &Writer{
 		id:           id,
 		dest:         dest,
@@ -28,7 +26,6 @@ func NewWriter(id uint16, dest net.Destination, writer buf.Writer, transferType 
 		followup:     false,
 		transferType: transferType,
 		globalID:     globalID,
-		inbound:      inbound,
 	}
 }
 
@@ -46,7 +43,6 @@ func (w *Writer) getNextFrameMeta() FrameMetadata {
 		SessionID: w.id,
 		Target:    w.dest,
 		GlobalID:  w.globalID,
-		Inbound:   w.inbound,
 	}
 
 	if w.followup {

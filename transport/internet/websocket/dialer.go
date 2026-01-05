@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"io"
+	gonet "net"
 	"time"
 
 	"github.com/HZ-PRE/XrarCore/common"
@@ -57,13 +58,12 @@ func dialWebSocket(ctx context.Context, dest net.Destination, streamSettings *in
 
 	protocol := "ws"
 
-	tConfig := tls.ConfigFromStreamSettings(streamSettings)
-	if tConfig != nil {
+	if config := tls.ConfigFromStreamSettings(streamSettings); config != nil {
 		protocol = "wss"
-		tlsConfig := tConfig.GetTLSConfig(tls.WithDestination(dest), tls.WithNextProto("http/1.1"))
+		tlsConfig := config.GetTLSConfig(tls.WithDestination(dest), tls.WithNextProto("http/1.1"))
 		dialer.TLSClientConfig = tlsConfig
-		if fingerprint := tls.GetFingerprint(tConfig.Fingerprint); fingerprint != nil {
-			dialer.NetDialTLSContext = func(_ context.Context, _, addr string) (net.Conn, error) {
+		if fingerprint := tls.GetFingerprint(config.Fingerprint); fingerprint != nil {
+			dialer.NetDialTLSContext = func(_ context.Context, _, addr string) (gonet.Conn, error) {
 				// Like the NetDial in the dialer
 				pconn, err := internet.DialSystem(ctx, dest, streamSettings.SocketSettings)
 				if err != nil {
@@ -99,18 +99,10 @@ func dialWebSocket(ctx context.Context, dest net.Destination, streamSettings *in
 			return nil, err
 		}
 
-		return NewConnection(conn, conn.RemoteAddr(), nil, wsSettings.HeartbeatPeriod), nil
+		return NewConnection(conn, conn.RemoteAddr(), nil), nil
 	}
 
 	header := wsSettings.GetRequestHeader()
-	// See dialer.DialContext()
-	header.Set("Host", wsSettings.Host)
-	if header.Get("Host") == "" && tConfig != nil {
-		header.Set("Host", tConfig.ServerName)
-	}
-	if header.Get("Host") == "" {
-		header.Set("Host", dest.Address.String())
-	}
 	if ed != nil {
 		// RawURLEncoding is support by both V2Ray/V2Fly and XRay.
 		header.Set("Sec-WebSocket-Protocol", base64.RawURLEncoding.EncodeToString(ed))
@@ -125,7 +117,7 @@ func dialWebSocket(ctx context.Context, dest net.Destination, streamSettings *in
 		return nil, errors.New("failed to dial to (", uri, "): ", reason).Base(err)
 	}
 
-	return NewConnection(conn, conn.RemoteAddr(), nil, wsSettings.HeartbeatPeriod), nil
+	return NewConnection(conn, conn.RemoteAddr(), nil), nil
 }
 
 type delayDialConn struct {

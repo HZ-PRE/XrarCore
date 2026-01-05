@@ -2,9 +2,7 @@ package dns
 
 import (
 	"context"
-	go_errors "errors"
 	"io"
-	"strings"
 	"sync"
 	"time"
 
@@ -29,7 +27,7 @@ func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
 		h := new(Handler)
 		if err := core.RequireFeatures(ctx, func(dnsClient dns.Client, policyManager policy.Manager) error {
-			core.OptionalFeatures(ctx, func(fdns dns.FakeDNSEngine) {
+			core.RequireFeatures(ctx, func(fdns dns.FakeDNSEngine) {
 				h.fdns = fdns
 			})
 			return h.Init(config.(*Config), dnsClient, policyManager)
@@ -51,7 +49,6 @@ type Handler struct {
 	server          net.Destination
 	timeout         time.Duration
 	nonIPQuery      string
-	blockTypes      []int32
 }
 
 func (h *Handler) Init(config *Config, dnsClient dns.Client, policyManager policy.Manager) error {
@@ -66,10 +63,6 @@ func (h *Handler) Init(config *Config, dnsClient dns.Client, policyManager polic
 		h.server = config.Server.AsDestination()
 	}
 	h.nonIPQuery = config.Non_IPQuery
-	if h.nonIPQuery == "" {
-		h.nonIPQuery = "reject"
-	}
-	h.blockTypes = config.BlockTypes
 	return nil
 }
 
@@ -91,12 +84,12 @@ func parseIPQuery(b []byte) (r bool, domain string, id uint16, qType dnsmessage.
 		errors.LogInfoInner(context.Background(), err, "question")
 		return
 	}
-	domain = q.Name.String()
 	qType = q.Type
 	if qType != dnsmessage.TypeA && qType != dnsmessage.TypeAAAA {
 		return
 	}
 
+	domain = q.Name.String()
 	r = true
 	return
 }
@@ -169,15 +162,11 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	terminate := func() {
-		cancel()
-		conn.Close()
-	}
-	timer := signal.CancelAfterInactivity(ctx, terminate, h.timeout)
-	defer timer.SetTimeout(0)
+	timer := signal.CancelAfterInactivity(ctx, cancel, h.timeout)
 
 	request := func() error {
-		defer timer.SetTimeout(0)
+		defer conn.Close()
+
 		for {
 			b, err := reader.ReadMessage()
 			if err == io.EOF {
@@ -192,36 +181,11 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 
 			if !h.isOwnLink(ctx) {
 				isIPQuery, domain, id, qType := parseIPQuery(b.Bytes())
-				if len(h.blockTypes) > 0 {
-					for _, blocktype := range h.blockTypes {
-						if blocktype == int32(qType) {
-							b.Release()
-							errors.LogInfo(ctx, "blocked type ", qType, " query for domain ", domain)
-							if h.nonIPQuery == "reject" {
-								err := h.rejectNonIPQuery(id, qType, domain, writer)
-								if err != nil {
-									return err
-								}
-							}
-							return nil
-						}
-					}
-				}
 				if isIPQuery {
-					b.Release()
-					go h.handleIPQuery(id, qType, domain, writer, timer)
-					continue
+					go h.handleIPQuery(id, qType, domain, writer)
 				}
-				if h.nonIPQuery == "drop" {
+				if isIPQuery || h.nonIPQuery == "drop" || qType == 65 {
 					b.Release()
-					continue
-				}
-				if h.nonIPQuery == "reject" {
-					b.Release()
-					err := h.rejectNonIPQuery(id, qType, domain, writer)
-					if err != nil {
-						return err
-					}
 					continue
 				}
 			}
@@ -233,7 +197,6 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 	}
 
 	response := func() error {
-		defer timer.SetTimeout(0)
 		for {
 			b, err := connReader.ReadMessage()
 			if err == io.EOF {
@@ -259,22 +222,21 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 	return nil
 }
 
-func (h *Handler) handleIPQuery(id uint16, qType dnsmessage.Type, domain string, writer dns_proto.MessageWriter, timer *signal.ActivityTimer) {
+func (h *Handler) handleIPQuery(id uint16, qType dnsmessage.Type, domain string, writer dns_proto.MessageWriter) {
 	var ips []net.IP
 	var err error
 
-	var ttl4 uint32
-	var ttl6 uint32
+	var ttl uint32 = 600
 
 	switch qType {
 	case dnsmessage.TypeA:
-		ips, ttl4, err = h.client.LookupIP(domain, dns.IPOption{
+		ips, err = h.client.LookupIP(domain, dns.IPOption{
 			IPv4Enable: true,
 			IPv6Enable: false,
 			FakeEnable: true,
 		})
 	case dnsmessage.TypeAAAA:
-		ips, ttl6, err = h.client.LookupIP(domain, dns.IPOption{
+		ips, err = h.client.LookupIP(domain, dns.IPOption{
 			IPv4Enable: false,
 			IPv6Enable: true,
 			FakeEnable: true,
@@ -282,9 +244,13 @@ func (h *Handler) handleIPQuery(id uint16, qType dnsmessage.Type, domain string,
 	}
 
 	rcode := dns.RCodeFromError(err)
-	if rcode == 0 && len(ips) == 0 && !go_errors.Is(err, dns.ErrEmptyResponse) {
+	if rcode == 0 && len(ips) == 0 && !errors.AllEqual(dns.ErrEmptyResponse, errors.Cause(err)) {
 		errors.LogInfoInner(context.Background(), err, "ip query")
 		return
+	}
+
+	if fkr0, ok := h.fdns.(dns.FakeDNSEngineRev0); ok && len(ips) > 0 && fkr0.IsIPInIPPool(net.IPAddress(ips[0])) {
+		ttl = 1
 	}
 
 	switch qType {
@@ -317,74 +283,29 @@ func (h *Handler) handleIPQuery(id uint16, qType dnsmessage.Type, domain string,
 	}))
 	common.Must(builder.StartAnswers())
 
-	rHeader4 := dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(domain), Class: dnsmessage.ClassINET, TTL: ttl4}
-	rHeader6 := dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(domain), Class: dnsmessage.ClassINET, TTL: ttl6}
+	rHeader := dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(domain), Class: dnsmessage.ClassINET, TTL: ttl}
 	for _, ip := range ips {
 		if len(ip) == net.IPv4len {
 			var r dnsmessage.AResource
 			copy(r.A[:], ip)
-			common.Must(builder.AResource(rHeader4, r))
+			common.Must(builder.AResource(rHeader, r))
 		} else {
 			var r dnsmessage.AAAAResource
 			copy(r.AAAA[:], ip)
-			common.Must(builder.AAAAResource(rHeader6, r))
+			common.Must(builder.AAAAResource(rHeader, r))
 		}
 	}
 	msgBytes, err := builder.Finish()
 	if err != nil {
 		errors.LogInfoInner(context.Background(), err, "pack message")
 		b.Release()
-		timer.SetTimeout(0)
+		return
 	}
 	b.Resize(0, int32(len(msgBytes)))
 
 	if err := writer.WriteMessage(b); err != nil {
 		errors.LogInfoInner(context.Background(), err, "write IP answer")
-		timer.SetTimeout(0)
 	}
-}
-
-func (h *Handler) rejectNonIPQuery(id uint16, qType dnsmessage.Type, domain string, writer dns_proto.MessageWriter) error {
-	domainT := strings.TrimSuffix(domain, ".")
-	if domainT == "" {
-		return errors.New("empty domain name")
-	}
-	b := buf.New()
-	rawBytes := b.Extend(buf.Size)
-	builder := dnsmessage.NewBuilder(rawBytes[:0], dnsmessage.Header{
-		ID:                 id,
-		RCode:              dnsmessage.RCodeRefused,
-		RecursionAvailable: true,
-		RecursionDesired:   true,
-		Response:           true,
-		Authoritative:      true,
-	})
-	builder.EnableCompression()
-	common.Must(builder.StartQuestions())
-	err := builder.Question(dnsmessage.Question{
-		Name:  dnsmessage.MustNewName(domain),
-		Class: dnsmessage.ClassINET,
-		Type:  qType,
-	})
-	if err != nil {
-		errors.LogInfo(context.Background(), "unexpected domain ", domain, " when building reject message: ", err)
-		b.Release()
-		return err
-	}
-
-	msgBytes, err := builder.Finish()
-	if err != nil {
-		errors.LogInfoInner(context.Background(), err, "pack reject message")
-		b.Release()
-		return err
-	}
-	b.Resize(0, int32(len(msgBytes)))
-
-	if err := writer.WriteMessage(b); err != nil {
-		errors.LogInfoInner(context.Background(), err, "write reject answer")
-		return err
-	}
-	return nil
 }
 
 type outboundConn struct {
@@ -393,7 +314,6 @@ type outboundConn struct {
 
 	conn      net.Conn
 	connReady chan struct{}
-	closed    bool
 }
 
 func (c *outboundConn) dial() error {
@@ -408,16 +328,12 @@ func (c *outboundConn) dial() error {
 
 func (c *outboundConn) Write(b []byte) (int, error) {
 	c.access.Lock()
-	if c.closed {
-		c.access.Unlock()
-		return 0, errors.New("outbound connection closed")
-	}
 
 	if c.conn == nil {
 		if err := c.dial(); err != nil {
 			c.access.Unlock()
 			errors.LogWarningInner(context.Background(), err, "failed to dial outbound connection")
-			return 0, err
+			return len(b), nil
 		}
 	}
 
@@ -427,27 +343,24 @@ func (c *outboundConn) Write(b []byte) (int, error) {
 }
 
 func (c *outboundConn) Read(b []byte) (int, error) {
+	var conn net.Conn
 	c.access.Lock()
-	if c.closed {
-		c.access.Unlock()
-		return 0, io.EOF
-	}
+	conn = c.conn
+	c.access.Unlock()
 
-	if c.conn == nil {
-		c.access.Unlock()
+	if conn == nil {
 		_, open := <-c.connReady
 		if !open {
 			return 0, io.EOF
 		}
-		return c.conn.Read(b)
+		conn = c.conn
 	}
-	c.access.Unlock()
-	return c.conn.Read(b)
+
+	return conn.Read(b)
 }
 
 func (c *outboundConn) Close() error {
 	c.access.Lock()
-	c.closed = true
 	close(c.connReady)
 	if c.conn != nil {
 		c.conn.Close()

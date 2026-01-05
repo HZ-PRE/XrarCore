@@ -1,5 +1,7 @@
 package router
 
+//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
+
 import (
 	"context"
 	sync "sync"
@@ -32,7 +34,6 @@ type Route struct {
 	routing.Context
 	outboundGroupTags []string
 	outboundTag       string
-	ruleTag           string
 }
 
 // Init initializes the Router.
@@ -88,7 +89,7 @@ func (r *Router) PickRoute(ctx routing.Context) (routing.Route, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Route{Context: ctx, outboundTag: tag, ruleTag: rule.RuleTag}, nil
+	return &Route{Context: ctx, outboundTag: tag}, nil
 }
 
 // AddRule implements routing.Router.
@@ -236,10 +237,6 @@ func (r *Route) GetOutboundGroupTags() []string {
 // GetOutboundTag implements routing.Route.
 func (r *Route) GetOutboundTag() string {
 	return r.outboundTag
-}
-
-func (r *Route) GetRuleTag() string {
-	return r.ruleTag
 }
 
 func init() {

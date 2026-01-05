@@ -17,15 +17,6 @@ var ErrBufferFull = errors.New("buffer is full")
 
 var pool = bytespool.GetPool(Size)
 
-// ownership represents the data owner of the buffer.
-type ownership uint8
-
-const (
-	managed ownership = iota
-	unmanaged
-	bytespools
-)
-
 // Buffer is a recyclable allocation of a byte array. Buffer.Release() recycles
 // the buffer into an internal buffer pool, in order to recreate a buffer more
 // quickly.
@@ -33,11 +24,11 @@ type Buffer struct {
 	v         []byte
 	start     int32
 	end       int32
-	ownership ownership
+	unmanaged bool
 	UDP       *net.Destination
 }
 
-// New creates a Buffer with 0 length and 8K capacity, managed.
+// New creates a Buffer with 0 length and 8K capacity.
 func New() *Buffer {
 	buf := pool.Get().([]byte)
 	if cap(buf) >= Size {
@@ -51,7 +42,7 @@ func New() *Buffer {
 	}
 }
 
-// NewExisted creates a standard size Buffer with an existed bytearray, managed.
+// NewExisted creates a managed, standard size Buffer with an existed bytearray
 func NewExisted(b []byte) *Buffer {
 	if cap(b) < Size {
 		panic("Invalid buffer")
@@ -68,16 +59,16 @@ func NewExisted(b []byte) *Buffer {
 	}
 }
 
-// FromBytes creates a Buffer with an existed bytearray, unmanaged.
+// FromBytes creates a Buffer with an existed bytearray
 func FromBytes(b []byte) *Buffer {
 	return &Buffer{
 		v:         b,
 		end:       int32(len(b)),
-		ownership: unmanaged,
+		unmanaged: true,
 	}
 }
 
-// StackNew creates a new Buffer object on stack, managed.
+// StackNew creates a new Buffer object on stack.
 // This method is for buffers that is released in the same function.
 func StackNew() Buffer {
 	buf := pool.Get().([]byte)
@@ -92,17 +83,9 @@ func StackNew() Buffer {
 	}
 }
 
-// NewWithSize creates a Buffer with 0 length and capacity with at least the given size, bytespool's.
-func NewWithSize(size int32) *Buffer {
-	return &Buffer{
-		v:         bytespool.Alloc(size),
-		ownership: bytespools,
-	}
-}
-
 // Release recycles the buffer into an internal buffer pool.
 func (b *Buffer) Release() {
-	if b == nil || b.v == nil || b.ownership == unmanaged {
+	if b == nil || b.v == nil || b.unmanaged {
 		return
 	}
 
@@ -110,13 +93,8 @@ func (b *Buffer) Release() {
 	b.v = nil
 	b.Clear()
 
-	switch b.ownership {
-	case managed:
-		if cap(p) == Size {
-			pool.Put(p)
-		}
-	case bytespools:
-		bytespool.Free(p)
+	if cap(p) == Size {
+		pool.Put(p)
 	}
 	b.UDP = nil
 }
@@ -144,7 +122,7 @@ func (b *Buffer) Bytes() []byte {
 }
 
 // Extend increases the buffer size by n bytes, and returns the extended part.
-// It panics if result size is larger than size of this buffer.
+// It panics if result size is larger than buf.Size.
 func (b *Buffer) Extend(n int32) []byte {
 	end := b.end + n
 	if end > int32(len(b.v)) {
@@ -234,22 +212,6 @@ func (b *Buffer) Len() int32 {
 		return 0
 	}
 	return b.end - b.start
-}
-
-// Cap returns the capacity of the buffer content.
-func (b *Buffer) Cap() int32 {
-	if b == nil {
-		return 0
-	}
-	return int32(len(b.v))
-}
-
-// Available returns the available capacity of the buffer content.
-func (b *Buffer) Available() int32 {
-	if b == nil {
-		return 0
-	}
-	return int32(len(b.v)) - b.end
 }
 
 // IsEmpty returns true if the buffer is empty.

@@ -58,12 +58,8 @@ type node struct {
 	RTTDeviationCost time.Duration
 }
 
-func (s *LeastLoadStrategy) InjectContext(ctx context.Context) {
-	s.ctx = ctx
-	common.Must(core.RequireFeatures(s.ctx, func(observatory extension.Observatory) error {
-		s.observer = observatory
-		return nil
-	}))
+func (l *LeastLoadStrategy) InjectContext(ctx context.Context) {
+	l.ctx = ctx
 }
 
 func (s *LeastLoadStrategy) PickOutbound(candidates []string) string {
@@ -140,8 +136,10 @@ func (s *LeastLoadStrategy) selectLeastLoad(nodes []*node) []*node {
 
 func (s *LeastLoadStrategy) getNodes(candidates []string, maxRTT time.Duration) []*node {
 	if s.observer == nil {
-		errors.LogError(s.ctx, "observer is nil")
-		return make([]*node, 0)
+		common.Must(core.RequireFeatures(s.ctx, func(observatory extension.Observatory) error {
+			s.observer = observatory
+			return nil
+		}))
 	}
 	observeResult, err := s.observer.GetObservation(s.ctx)
 	if err != nil {

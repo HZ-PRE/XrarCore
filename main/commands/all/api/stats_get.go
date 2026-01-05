@@ -8,26 +8,19 @@ import (
 var cmdGetStats = &base.Command{
 	CustomFlags: true,
 	UsageLine:   "{{.Exec}} api stats [--server=127.0.0.1:8080] [-name '']",
-	Short:       "Retrieve statistics",
+	Short:       "Get statistics",
 	Long: `
-Retrieve the statistics from Xray.
-
+Get statistics from Xray.
 Arguments:
-
-	-s, -server <server:port>
+	-s, -server 
 		The API server address. Default 127.0.0.1:8080
-
-	-t, -timeout <seconds>
-		Timeout in seconds for calling API. Default 3
-
+	-t, -timeout
+		Timeout seconds to call API. Default 3
 	-name
-		Name of the counter.
-
+		Name of the stat counter.
 	-reset
-		Reset the counter after fetching their values. Default false
-
+		Reset the counter to fetching its value.
 Example:
-
 	{{.Exec}} {{.LongName}} --server=127.0.0.1:8080 -name "inbound>>>statin>>>traffic>>>downlink"
 `,
 	Run: executeGetStats,

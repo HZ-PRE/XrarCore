@@ -74,7 +74,7 @@ func (s *ServerSession) handshake4(cmd byte, reader io.Reader, writer io.Writer)
 		if err != nil {
 			return nil, errors.New("failed to read domain for socks 4a").Base(err)
 		}
-		address = net.ParseAddress(domain)
+		address = net.DomainAddress(domain)
 	}
 
 	switch cmd {
@@ -352,11 +352,6 @@ func EncodeUDPPacket(request *protocol.RequestHeader, data []byte) (*buf.Buffer,
 	if err := addrParser.WriteAddressPort(b, request.Address, request.Port); err != nil {
 		b.Release()
 		return nil, err
-	}
-	// if data is too large, return an empty buffer (drop too big data)
-	if b.Available() < int32(len(data)) {
-		b.Clear()
-		return b, nil
 	}
 	common.Must2(b.Write(data))
 	return b, nil
