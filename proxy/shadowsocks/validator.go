@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
+	"fmt"
 	"hash/crc64"
 	"runtime"
 	"strings"
@@ -65,6 +66,7 @@ func (v *Validator) Add(u *protocol.MemoryUser) error {
 
 // Del a Shadowsocks user with a non-empty Email.
 func (v *Validator) Del(email string) error {
+	fmt.Println("删除：%s", email)
 	if email == "" {
 		return errors.New("Email must not be empty.")
 	}
@@ -73,8 +75,10 @@ func (v *Validator) Del(email string) error {
 
 	email = strings.ToLower(email)
 	if _, ok := v.users.Load(email); !ok {
+		fmt.Println("失败删除：%s", email)
 		return nil
 	}
+	fmt.Println("成功删除：%s", email)
 	v.onUsers.Delete(email)
 	v.onHourUsers.Delete(email)
 	v.onDayUsers.Delete(email)
