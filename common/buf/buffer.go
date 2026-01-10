@@ -13,8 +13,6 @@ const (
 	Size = 8192
 )
 
-var ErrBufferFull = errors.New("buffer is full")
-
 var pool = bytespool.GetPool(Size)
 
 // Buffer is a recyclable allocation of a byte array. Buffer.Release() recycles
@@ -126,11 +124,10 @@ func (b *Buffer) Bytes() []byte {
 func (b *Buffer) Extend(n int32) []byte {
 	end := b.end + n
 	if end > int32(len(b.v)) {
-		return []byte{}
+		panic("extending out of bound")
 	}
 	ext := b.v[b.end:end]
 	b.end = end
-	clear(ext)
 	return ext
 }
 
@@ -179,7 +176,6 @@ func (b *Buffer) Check() {
 
 // Resize cuts the buffer at the given position.
 func (b *Buffer) Resize(from, to int32) {
-	oldEnd := b.end
 	if from < 0 {
 		from += b.Len()
 	}
@@ -192,9 +188,6 @@ func (b *Buffer) Resize(from, to int32) {
 	b.end = b.start + to
 	b.start += from
 	b.Check()
-	if b.end > oldEnd {
-		clear(b.v[oldEnd:b.end])
-	}
 }
 
 // Advance cuts the buffer at the given position.
@@ -214,6 +207,21 @@ func (b *Buffer) Len() int32 {
 	return b.end - b.start
 }
 
+// Cap returns the capacity of the buffer content.
+func (b *Buffer) Cap() int32 {
+	if b == nil {
+		return 0
+	}
+	return int32(len(b.v))
+}
+
+// NewWithSize creates a Buffer with 0 length and capacity with at least the given size.
+func NewWithSize(size int32) *Buffer {
+	return &Buffer{
+		v: bytespool.Alloc(size),
+	}
+}
+
 // IsEmpty returns true if the buffer is empty.
 func (b *Buffer) IsEmpty() bool {
 	return b.Len() == 0
@@ -228,16 +236,13 @@ func (b *Buffer) IsFull() bool {
 func (b *Buffer) Write(data []byte) (int, error) {
 	nBytes := copy(b.v[b.end:], data)
 	b.end += int32(nBytes)
-	if nBytes < len(data) {
-		return nBytes, ErrBufferFull
-	}
 	return nBytes, nil
 }
 
 // WriteByte writes a single byte into the buffer.
 func (b *Buffer) WriteByte(v byte) error {
 	if b.IsFull() {
-		return ErrBufferFull
+		return errors.New("buffer full")
 	}
 	b.v[b.end] = v
 	b.end++

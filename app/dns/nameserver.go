@@ -35,7 +35,7 @@ type Client struct {
 var errExpectedIPNonMatch = errors.New("expectIPs not match")
 
 // NewServer creates a name server object according to the network destination url.
-func NewServer(dest net.Destination, dispatcher routing.Dispatcher, queryStrategy QueryStrategy) (Server, error) {
+func NewServer(ctx context.Context, dest net.Destination, dispatcher routing.Dispatcher, queryStrategy QueryStrategy) (Server, error) {
 	if address := dest.Address; address.Family().IsDomain() {
 		u, err := url.Parse(address.Domain())
 		if err != nil {
@@ -43,11 +43,15 @@ func NewServer(dest net.Destination, dispatcher routing.Dispatcher, queryStrateg
 		}
 		switch {
 		case strings.EqualFold(u.String(), "localhost"):
-			return NewLocalNameServer(), nil
-		case strings.EqualFold(u.Scheme, "https"): // DOH Remote mode
-			return NewDoHNameServer(u, dispatcher, queryStrategy)
-		case strings.EqualFold(u.Scheme, "https+local"): // DOH Local mode
-			return NewDoHLocalNameServer(u, queryStrategy), nil
+			return NewLocalNameServer(queryStrategy), nil
+		case strings.EqualFold(u.Scheme, "https"): // DNS-over-HTTPS Remote mode
+			return NewDoHNameServer(u, queryStrategy, dispatcher, false), nil
+		case strings.EqualFold(u.Scheme, "h2c"): // DNS-over-HTTPS h2c Remote mode
+			return NewDoHNameServer(u, queryStrategy, dispatcher, true), nil
+		case strings.EqualFold(u.Scheme, "https+local"): // DNS-over-HTTPS Local mode
+			return NewDoHNameServer(u, queryStrategy, nil, false), nil
+		case strings.EqualFold(u.Scheme, "h2c+local"): // DNS-over-HTTPS h2c Local mode
+			return NewDoHNameServer(u, queryStrategy, nil, true), nil
 		case strings.EqualFold(u.Scheme, "quic+local"): // DNS-over-QUIC Local mode
 			return NewQUICNameServer(u, queryStrategy)
 		case strings.EqualFold(u.Scheme, "tcp"): // DNS-over-TCP Remote mode
@@ -55,14 +59,18 @@ func NewServer(dest net.Destination, dispatcher routing.Dispatcher, queryStrateg
 		case strings.EqualFold(u.Scheme, "tcp+local"): // DNS-over-TCP Local mode
 			return NewTCPLocalNameServer(u, queryStrategy)
 		case strings.EqualFold(u.String(), "fakedns"):
-			return NewFakeDNSServer(), nil
+			var fd dns.FakeDNSEngine
+			core.RequireFeatures(ctx, func(fdns dns.FakeDNSEngine) {
+				fd = fdns
+			})
+			return NewFakeDNSServer(fd), nil
 		}
 	}
 	if dest.Network == net.Network_Unknown {
 		dest.Network = net.Network_UDP
 	}
 	if dest.Network == net.Network_UDP { // UDP classic DNS mode
-		return NewClassicNameServer(dest, dispatcher), nil
+		return NewClassicNameServer(dest, dispatcher, queryStrategy), nil
 	}
 	return nil, errors.New("No available name server could be created from ", dest).AtWarning()
 }
@@ -80,7 +88,7 @@ func NewClient(
 
 	err := core.RequireFeatures(ctx, func(dispatcher routing.Dispatcher) error {
 		// Create a new server for each client for now
-		server, err := NewServer(ns.Address.AsDestination(), dispatcher, ns.GetQueryStrategy())
+		server, err := NewServer(ctx, ns.Address.AsDestination(), dispatcher, ns.GetQueryStrategy())
 		if err != nil {
 			return errors.New("failed to create nameserver").Base(err).AtWarning()
 		}
@@ -90,7 +98,7 @@ func NewClient(
 			ns.PrioritizedDomain = append(ns.PrioritizedDomain, localTLDsAndDotlessDomains...)
 			ns.OriginalRules = append(ns.OriginalRules, localTLDsAndDotlessDomainsRule)
 			// The following lines is a solution to avoid core panics（rule index out of range） when setting `localhost` DNS client in config.
-			// Because the `localhost` DNS client will apend len(localTLDsAndDotlessDomains) rules into matcherInfos to match `geosite:private` default rule.
+			// Because the `localhost` DNS client will append len(localTLDsAndDotlessDomains) rules into matcherInfos to match `geosite:private` default rule.
 			// But `matcherInfos` has no enough length to add rules, which leads to core panics (rule index out of range).
 			// To avoid this, the length of `matcherInfos` must be equal to the expected, so manually append it with Golang default zero value first for later modification.
 			// Related issues:
@@ -160,31 +168,6 @@ func NewClient(
 		client.expectIPs = matchers
 		return nil
 	})
-	return client, err
-}
-
-// NewSimpleClient creates a DNS client with a simple destination.
-func NewSimpleClient(ctx context.Context, endpoint *net.Endpoint, clientIP net.IP) (*Client, error) {
-	client := &Client{}
-	err := core.RequireFeatures(ctx, func(dispatcher routing.Dispatcher) error {
-		server, err := NewServer(endpoint.AsDestination(), dispatcher, QueryStrategy_USE_IP)
-		if err != nil {
-			return errors.New("failed to create nameserver").Base(err).AtWarning()
-		}
-		client.server = server
-		client.clientIP = clientIP
-		return nil
-	})
-
-	if len(clientIP) > 0 {
-		switch endpoint.Address.GetAddress().(type) {
-		case *net.IPOrDomain_Domain:
-			errors.LogInfo(ctx, "DNS: client ", endpoint.Address.GetDomain(), " uses clientIP ", clientIP.String())
-		case *net.IPOrDomain_Ip:
-			errors.LogInfo(ctx, "DNS: client ", endpoint.Address.GetIp(), " uses clientIP ", clientIP.String())
-		}
-	}
-
 	return client, err
 }
 

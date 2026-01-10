@@ -1,7 +1,5 @@
 package inbound
 
-//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
-
 import (
 	"context"
 	"sync"
@@ -9,13 +7,14 @@ import (
 	"github.com/HZ-PRE/XrarCore/app/proxyman"
 	"github.com/HZ-PRE/XrarCore/common"
 	"github.com/HZ-PRE/XrarCore/common/errors"
+	"github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/common/serial"
 	"github.com/HZ-PRE/XrarCore/common/session"
 	"github.com/HZ-PRE/XrarCore/core"
 	"github.com/HZ-PRE/XrarCore/features/inbound"
 )
 
-// Manager is to manage all inbound handlers.
+// Manager manages all inbound handlers.
 type Manager struct {
 	access          sync.RWMutex
 	untaggedHandler []inbound.Handler
@@ -159,6 +158,9 @@ func NewHandler(ctx context.Context, config *core.InboundHandlerConfig) (inbound
 		ctx = session.ContextWithSockopt(ctx, &session.Sockopt{
 			Mark: streamSettings.SocketSettings.Mark,
 		})
+	}
+	if streamSettings != nil && streamSettings.ProtocolName == "splithttp" {
+		ctx = session.ContextWithAllowedNetwork(ctx, net.Network_UDP)
 	}
 
 	allocStrategy := receiverSettings.AllocationStrategy

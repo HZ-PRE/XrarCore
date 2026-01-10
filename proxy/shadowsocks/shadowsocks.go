@@ -4,5 +4,3 @@
 //
 // R.I.P Shadowsocks
 package shadowsocks
-
-//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen

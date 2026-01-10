@@ -2,15 +2,16 @@ package splithttp_test
 
 import (
 	"context"
-	gotls "crypto/tls"
+	"crypto/rand"
 	"fmt"
-	gonet "net"
+	"io"
 	"net/http"
 	"runtime"
 	"testing"
 	"time"
 
 	"github.com/HZ-PRE/XrarCore/common"
+	"github.com/HZ-PRE/XrarCore/common/buf"
 	"github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/common/protocol/tls/cert"
 	"github.com/HZ-PRE/XrarCore/testing/servers/tcp"
@@ -19,12 +20,12 @@ import (
 	. "github.com/HZ-PRE/XrarCore/transport/internet/splithttp"
 	"github.com/HZ-PRE/XrarCore/transport/internet/stat"
 	"github.com/HZ-PRE/XrarCore/transport/internet/tls"
-	"golang.org/x/net/http2"
+	"github.com/google/go-cmp/cmp"
 )
 
-func Test_listenSHAndDial(t *testing.T) {
+func Test_ListenXHAndDial(t *testing.T) {
 	listenPort := tcp.PickPort()
-	listen, err := ListenSH(context.Background(), net.LocalHostIP, listenPort, &internet.MemoryStreamConfig{
+	listen, err := ListenXH(context.Background(), net.LocalHostIP, listenPort, &internet.MemoryStreamConfig{
 		ProtocolName: "splithttp",
 		ProtocolSettings: &Config{
 			Path: "/sh",
@@ -57,7 +58,7 @@ func Test_listenSHAndDial(t *testing.T) {
 
 	var b [1024]byte
 	fmt.Println("test2")
-	n, _ := conn.Read(b[:])
+	n, _ := io.ReadFull(conn, b[:])
 	fmt.Println("string is", n)
 	if string(b[:n]) != "Response" {
 		t.Error("response: ", string(b[:n]))
@@ -69,7 +70,7 @@ func Test_listenSHAndDial(t *testing.T) {
 	common.Must(err)
 	_, err = conn.Write([]byte("Test connection 2"))
 	common.Must(err)
-	n, _ = conn.Read(b[:])
+	n, _ = io.ReadFull(conn, b[:])
 	common.Must(err)
 	if string(b[:n]) != "Response" {
 		t.Error("response: ", string(b[:n]))
@@ -81,7 +82,7 @@ func Test_listenSHAndDial(t *testing.T) {
 
 func TestDialWithRemoteAddr(t *testing.T) {
 	listenPort := tcp.PickPort()
-	listen, err := ListenSH(context.Background(), net.LocalHostIP, listenPort, &internet.MemoryStreamConfig{
+	listen, err := ListenXH(context.Background(), net.LocalHostIP, listenPort, &internet.MemoryStreamConfig{
 		ProtocolName: "splithttp",
 		ProtocolSettings: &Config{
 			Path: "sh",
@@ -105,7 +106,7 @@ func TestDialWithRemoteAddr(t *testing.T) {
 
 	conn, err := Dial(context.Background(), net.TCPDestination(net.DomainAddress("localhost"), listenPort), &internet.MemoryStreamConfig{
 		ProtocolName:     "splithttp",
-		ProtocolSettings: &Config{Path: "sh", Header: map[string]string{"X-Forwarded-For": "1.1.1.1"}},
+		ProtocolSettings: &Config{Path: "sh", Headers: map[string]string{"X-Forwarded-For": "1.1.1.1"}},
 	})
 
 	common.Must(err)
@@ -113,7 +114,7 @@ func TestDialWithRemoteAddr(t *testing.T) {
 	common.Must(err)
 
 	var b [1024]byte
-	n, _ := conn.Read(b[:])
+	n, _ := io.ReadFull(conn, b[:])
 	if string(b[:n]) != "1.1.1.1:0" {
 		t.Error("response: ", string(b[:n]))
 	}
@@ -121,7 +122,7 @@ func TestDialWithRemoteAddr(t *testing.T) {
 	common.Must(listen.Close())
 }
 
-func Test_listenSHAndDial_TLS(t *testing.T) {
+func Test_ListenXHAndDial_TLS(t *testing.T) {
 	if runtime.GOARCH == "arm64" {
 		return
 	}
@@ -141,9 +142,18 @@ func Test_listenSHAndDial_TLS(t *testing.T) {
 			Certificate:   []*tls.Certificate{tls.ParseCertificate(cert.MustGenerate(nil, cert.CommonName("localhost")))},
 		},
 	}
-	listen, err := ListenSH(context.Background(), net.LocalHostIP, listenPort, streamSettings, func(conn stat.Connection) {
+	listen, err := ListenXH(context.Background(), net.LocalHostIP, listenPort, streamSettings, func(conn stat.Connection) {
 		go func() {
-			_ = conn.Close()
+			defer conn.Close()
+
+			var b [1024]byte
+			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, err := conn.Read(b[:])
+			if err != nil {
+				return
+			}
+
+			common.Must2(conn.Write([]byte("Response")))
 		}()
 	})
 	common.Must(err)
@@ -151,7 +161,15 @@ func Test_listenSHAndDial_TLS(t *testing.T) {
 
 	conn, err := Dial(context.Background(), net.TCPDestination(net.DomainAddress("localhost"), listenPort), streamSettings)
 	common.Must(err)
-	_ = conn.Close()
+
+	_, err = conn.Write([]byte("Test connection 1"))
+	common.Must(err)
+
+	var b [1024]byte
+	n, _ := io.ReadFull(conn, b[:])
+	if string(b[:n]) != "Response" {
+		t.Error("response: ", string(b[:n]))
+	}
 
 	end := time.Now()
 	if !end.Before(start.Add(time.Second * 5)) {
@@ -159,7 +177,7 @@ func Test_listenSHAndDial_TLS(t *testing.T) {
 	}
 }
 
-func Test_listenSHAndDial_H2C(t *testing.T) {
+func Test_ListenXHAndDial_H2C(t *testing.T) {
 	if runtime.GOARCH == "arm64" {
 		return
 	}
@@ -172,7 +190,7 @@ func Test_listenSHAndDial_H2C(t *testing.T) {
 			Path: "shs",
 		},
 	}
-	listen, err := ListenSH(context.Background(), net.LocalHostIP, listenPort, streamSettings, func(conn stat.Connection) {
+	listen, err := ListenXH(context.Background(), net.LocalHostIP, listenPort, streamSettings, func(conn stat.Connection) {
 		go func() {
 			_ = conn.Close()
 		}()
@@ -180,17 +198,11 @@ func Test_listenSHAndDial_H2C(t *testing.T) {
 	common.Must(err)
 	defer listen.Close()
 
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
 	client := http.Client{
-		Transport: &http2.Transport{
-			// So http2.Transport doesn't complain the URL scheme isn't 'https'
-			AllowHTTP: true,
-			// even with AllowHTTP, http2.Transport will attempt to establish
-			// the connection using DialTLSContext. Disable TLS with custom
-			// dial context.
-			DialTLSContext: func(ctx context.Context, network, addr string, cfg *gotls.Config) (gonet.Conn, error) {
-				var d gonet.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
+		Transport: &http.Transport{
+			Protocols: protocols,
 		},
 	}
 
@@ -206,7 +218,7 @@ func Test_listenSHAndDial_H2C(t *testing.T) {
 	}
 }
 
-func Test_listenSHAndDial_QUIC(t *testing.T) {
+func Test_ListenXHAndDial_QUIC(t *testing.T) {
 	if runtime.GOARCH == "arm64" {
 		return
 	}
@@ -227,20 +239,225 @@ func Test_listenSHAndDial_QUIC(t *testing.T) {
 			NextProtocol:  []string{"h3"},
 		},
 	}
-	listen, err := ListenSH(context.Background(), net.LocalHostIP, listenPort, streamSettings, func(conn stat.Connection) {
+
+	serverClosed := false
+	listen, err := ListenXH(context.Background(), net.LocalHostIP, listenPort, streamSettings, func(conn stat.Connection) {
 		go func() {
-			_ = conn.Close()
+			defer conn.Close()
+
+			b := buf.New()
+			defer b.Release()
+
+			for {
+				b.Clear()
+				if _, err := b.ReadFrom(conn); err != nil {
+					break
+				}
+				common.Must2(conn.Write(b.Bytes()))
+			}
+
+			serverClosed = true
 		}()
 	})
 	common.Must(err)
 	defer listen.Close()
 
+	time.Sleep(time.Second)
+
 	conn, err := Dial(context.Background(), net.UDPDestination(net.DomainAddress("localhost"), listenPort), streamSettings)
 	common.Must(err)
-	_ = conn.Close()
+
+	const N = 1024
+	b1 := make([]byte, N)
+	common.Must2(rand.Read(b1))
+	b2 := buf.New()
+
+	common.Must2(conn.Write(b1))
+
+	b2.Clear()
+	common.Must2(b2.ReadFullFrom(conn, N))
+	if r := cmp.Diff(b2.Bytes(), b1); r != "" {
+		t.Error(r)
+	}
+
+	common.Must2(conn.Write(b1))
+
+	b2.Clear()
+	common.Must2(b2.ReadFullFrom(conn, N))
+	if r := cmp.Diff(b2.Bytes(), b1); r != "" {
+		t.Error(r)
+	}
+
+	conn.Close()
+	time.Sleep(100 * time.Millisecond)
+	if !serverClosed {
+		t.Error("server did not get closed")
+	}
 
 	end := time.Now()
 	if !end.Before(start.Add(time.Second * 5)) {
 		t.Error("end: ", end, " start: ", start)
 	}
+}
+
+func Test_ListenXHAndDial_Unix(t *testing.T) {
+	tempDir := t.TempDir()
+	tempSocket := tempDir + "/server.sock"
+
+	listen, err := ListenXH(context.Background(), net.DomainAddress(tempSocket), 0, &internet.MemoryStreamConfig{
+		ProtocolName: "splithttp",
+		ProtocolSettings: &Config{
+			Path: "/sh",
+		},
+	}, func(conn stat.Connection) {
+		go func(c stat.Connection) {
+			defer c.Close()
+
+			var b [1024]byte
+			c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, err := c.Read(b[:])
+			if err != nil {
+				return
+			}
+
+			common.Must2(c.Write([]byte("Response")))
+		}(conn)
+	})
+	common.Must(err)
+	ctx := context.Background()
+	streamSettings := &internet.MemoryStreamConfig{
+		ProtocolName: "splithttp",
+		ProtocolSettings: &Config{
+			Host: "example.com",
+			Path: "sh",
+		},
+	}
+	conn, err := Dial(ctx, net.UnixDestination(net.DomainAddress(tempSocket)), streamSettings)
+
+	common.Must(err)
+	_, err = conn.Write([]byte("Test connection 1"))
+	common.Must(err)
+
+	var b [1024]byte
+	fmt.Println("test2")
+	n, _ := io.ReadFull(conn, b[:])
+	fmt.Println("string is", n)
+	if string(b[:n]) != "Response" {
+		t.Error("response: ", string(b[:n]))
+	}
+
+	common.Must(conn.Close())
+	conn, err = Dial(ctx, net.UnixDestination(net.DomainAddress(tempSocket)), streamSettings)
+
+	common.Must(err)
+	_, err = conn.Write([]byte("Test connection 2"))
+	common.Must(err)
+	n, _ = io.ReadFull(conn, b[:])
+	common.Must(err)
+	if string(b[:n]) != "Response" {
+		t.Error("response: ", string(b[:n]))
+	}
+	common.Must(conn.Close())
+
+	common.Must(listen.Close())
+}
+
+func Test_queryString(t *testing.T) {
+	listenPort := tcp.PickPort()
+	listen, err := ListenXH(context.Background(), net.LocalHostIP, listenPort, &internet.MemoryStreamConfig{
+		ProtocolName: "splithttp",
+		ProtocolSettings: &Config{
+			// this querystring does not have any effect, but sometimes people blindly copy it from websocket config. make sure the outbound doesn't break
+			Path: "/sh?ed=2048",
+		},
+	}, func(conn stat.Connection) {
+		go func(c stat.Connection) {
+			defer c.Close()
+
+			var b [1024]byte
+			c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, err := c.Read(b[:])
+			if err != nil {
+				return
+			}
+
+			common.Must2(c.Write([]byte("Response")))
+		}(conn)
+	})
+	common.Must(err)
+	ctx := context.Background()
+	streamSettings := &internet.MemoryStreamConfig{
+		ProtocolName:     "splithttp",
+		ProtocolSettings: &Config{Path: "sh?ed=2048"},
+	}
+	conn, err := Dial(ctx, net.TCPDestination(net.DomainAddress("localhost"), listenPort), streamSettings)
+
+	common.Must(err)
+	_, err = conn.Write([]byte("Test connection 1"))
+	common.Must(err)
+
+	var b [1024]byte
+	fmt.Println("test2")
+	n, _ := io.ReadFull(conn, b[:])
+	fmt.Println("string is", n)
+	if string(b[:n]) != "Response" {
+		t.Error("response: ", string(b[:n]))
+	}
+
+	common.Must(conn.Close())
+	common.Must(listen.Close())
+}
+
+func Test_maxUpload(t *testing.T) {
+	listenPort := tcp.PickPort()
+	streamSettings := &internet.MemoryStreamConfig{
+		ProtocolName: "splithttp",
+		ProtocolSettings: &Config{
+			Path: "/sh",
+			ScMaxEachPostBytes: &RangeConfig{
+				From: 10000,
+				To:   10000,
+			},
+		},
+	}
+
+	var uploadSize int
+	listen, err := ListenXH(context.Background(), net.LocalHostIP, listenPort, streamSettings, func(conn stat.Connection) {
+		go func(c stat.Connection) {
+			defer c.Close()
+			var b [10240]byte
+			c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			n, err := c.Read(b[:])
+			if err != nil {
+				return
+			}
+
+			uploadSize = n
+
+			common.Must2(c.Write([]byte("Response")))
+		}(conn)
+	})
+	common.Must(err)
+	ctx := context.Background()
+
+	conn, err := Dial(ctx, net.TCPDestination(net.DomainAddress("localhost"), listenPort), streamSettings)
+
+	// send a slightly too large upload
+	var upload [10001]byte
+	_, err = conn.Write(upload[:])
+	common.Must(err)
+
+	var b [10240]byte
+	n, _ := io.ReadFull(conn, b[:])
+	fmt.Println("string is", n)
+	if string(b[:n]) != "Response" {
+		t.Error("response: ", string(b[:n]))
+	}
+	common.Must(conn.Close())
+
+	if uploadSize > 10000 || uploadSize == 0 {
+		t.Error("incorrect upload size: ", uploadSize)
+	}
+
+	common.Must(listen.Close())
 }

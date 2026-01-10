@@ -5,4 +5,4 @@ WebSocket transport implements an HTTP(S) compliable, surveillance proof transpo
 */
 package websocket
 
-//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
+const protocolName = "websocket"

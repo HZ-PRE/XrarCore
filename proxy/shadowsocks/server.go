@@ -56,6 +56,7 @@ func NewServer(ctx context.Context, config *ServerConfig) (*Server, error) {
 	}
 	s.wg.Add(1)
 	go s.runPeriodicTask(sCtx)
+
 	return s, nil
 }
 func (s *Server) runPeriodicTask(ctx context.Context) {
@@ -82,6 +83,21 @@ func (s *Server) AddUser(ctx context.Context, u *protocol.MemoryUser) error {
 // RemoveUser implements proxy.UserManager.RemoveUser().
 func (s *Server) RemoveUser(ctx context.Context, e string) error {
 	return s.validator.Del(e)
+}
+
+// GetUser implements proxy.UserManager.GetUser().
+func (s *Server) GetUser(ctx context.Context, email string) *protocol.MemoryUser {
+	return s.validator.GetByEmail(email)
+}
+
+// GetUsers implements proxy.UserManager.GetUsers().
+func (s *Server) GetUsers(ctx context.Context) []*protocol.MemoryUser {
+	return s.validator.GetAll()
+}
+
+// GetUsersCount implements proxy.UserManager.GetUsersCount().
+func (s *Server) GetUsersCount(context.Context) int64 {
+	return s.validator.GetCount()
 }
 
 func (s *Server) Network() []net.Network {

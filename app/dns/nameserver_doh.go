@@ -3,15 +3,17 @@ package dns
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/HZ-PRE/XrarCore/common"
+	"github.com/HZ-PRE/XrarCore/common/crypto"
 	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/HZ-PRE/XrarCore/common/log"
 	"github.com/HZ-PRE/XrarCore/common/net"
@@ -23,118 +25,102 @@ import (
 	dns_feature "github.com/HZ-PRE/XrarCore/features/dns"
 	"github.com/HZ-PRE/XrarCore/features/routing"
 	"github.com/HZ-PRE/XrarCore/transport/internet"
+	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/net/http2"
 )
 
 // DoHNameServer implemented DNS over HTTPS (RFC8484) Wire Format,
 // which is compatible with traditional dns over udp(RFC1035),
 // thus most of the DOH implementation is copied from udpns.go
 type DoHNameServer struct {
-	dispatcher routing.Dispatcher
 	sync.RWMutex
 	ips           map[string]*record
 	pub           *pubsub.Service
 	cleanup       *task.Periodic
-	reqID         uint32
 	httpClient    *http.Client
 	dohURL        string
 	name          string
 	queryStrategy QueryStrategy
 }
 
-// NewDoHNameServer creates DOH server object for remote resolving.
-func NewDoHNameServer(url *url.URL, dispatcher routing.Dispatcher, queryStrategy QueryStrategy) (*DoHNameServer, error) {
-	errors.LogInfo(context.Background(), "DNS: created Remote DOH client for ", url.String())
-	s := baseDOHNameServer(url, "DOH", queryStrategy)
-
-	s.dispatcher = dispatcher
-	tr := &http.Transport{
-		MaxIdleConns:        30,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 30 * time.Second,
-		ForceAttemptHTTP2:   true,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			dest, err := net.ParseDestination(network + ":" + addr)
-			if err != nil {
-				return nil, err
-			}
-			link, err := s.dispatcher.Dispatch(toDnsContext(ctx, s.dohURL), dest)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			default:
-
-			}
-			if err != nil {
-				return nil, err
-			}
-
-			cc := common.ChainedClosable{}
-			if cw, ok := link.Writer.(common.Closable); ok {
-				cc = append(cc, cw)
-			}
-			if cr, ok := link.Reader.(common.Closable); ok {
-				cc = append(cc, cr)
-			}
-			return cnc.NewConnection(
-				cnc.ConnectionInputMulti(link.Writer),
-				cnc.ConnectionOutputMulti(link.Reader),
-				cnc.ConnectionOnClose(cc),
-			), nil
-		},
-	}
-	s.httpClient = &http.Client{
-		Timeout:   time.Second * 180,
-		Transport: tr,
-	}
-
-	return s, nil
-}
-
-// NewDoHLocalNameServer creates DOH client object for local resolving
-func NewDoHLocalNameServer(url *url.URL, queryStrategy QueryStrategy) *DoHNameServer {
+// NewDoHNameServer creates DOH/DOHL client object for remote/local resolving.
+func NewDoHNameServer(url *url.URL, queryStrategy QueryStrategy, dispatcher routing.Dispatcher, h2c bool) *DoHNameServer {
 	url.Scheme = "https"
-	s := baseDOHNameServer(url, "DOHL", queryStrategy)
-	tr := &http.Transport{
-		IdleConnTimeout:   90 * time.Second,
-		ForceAttemptHTTP2: true,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			dest, err := net.ParseDestination(network + ":" + addr)
-			if err != nil {
-				return nil, err
-			}
-			conn, err := internet.DialSystem(ctx, dest, nil)
-			log.Record(&log.AccessMessage{
-				From:   "DNS",
-				To:     s.dohURL,
-				Status: log.AccessAccepted,
-				Detour: "local",
-			})
-			if err != nil {
-				return nil, err
-			}
-			return conn, nil
-		},
+	mode := "DOH"
+	if dispatcher == nil {
+		mode = "DOHL"
 	}
-	s.httpClient = &http.Client{
-		Timeout:   time.Second * 180,
-		Transport: tr,
-	}
-	errors.LogInfo(context.Background(), "DNS: created Local DOH client for ", url.String())
-	return s
-}
-
-func baseDOHNameServer(url *url.URL, prefix string, queryStrategy QueryStrategy) *DoHNameServer {
+	errors.LogInfo(context.Background(), "DNS: created ", mode, " client for ", url.String(), ", with h2c ", h2c)
 	s := &DoHNameServer{
 		ips:           make(map[string]*record),
 		pub:           pubsub.NewService(),
-		name:          prefix + "//" + url.Host,
+		name:          mode + "//" + url.Host,
 		dohURL:        url.String(),
 		queryStrategy: queryStrategy,
 	}
 	s.cleanup = &task.Periodic{
 		Interval: time.Minute,
 		Execute:  s.Cleanup,
+	}
+	s.httpClient = &http.Client{
+		Transport: &http2.Transport{
+			IdleConnTimeout: net.ConnIdleTimeout,
+			ReadIdleTimeout: net.ChromeH2KeepAlivePeriod,
+			DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
+				dest, err := net.ParseDestination(network + ":" + addr)
+				if err != nil {
+					return nil, err
+				}
+				var conn net.Conn
+				if dispatcher != nil {
+					dnsCtx := toDnsContext(ctx, s.dohURL)
+					if h2c {
+						dnsCtx = session.ContextWithMitmAlpn11(dnsCtx, false) // for insurance
+						dnsCtx = session.ContextWithMitmServerName(dnsCtx, url.Hostname())
+					}
+					link, err := dispatcher.Dispatch(dnsCtx, dest)
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					default:
+					}
+					if err != nil {
+						return nil, err
+					}
+					cc := common.ChainedClosable{}
+					if cw, ok := link.Writer.(common.Closable); ok {
+						cc = append(cc, cw)
+					}
+					if cr, ok := link.Reader.(common.Closable); ok {
+						cc = append(cc, cr)
+					}
+					conn = cnc.NewConnection(
+						cnc.ConnectionInputMulti(link.Writer),
+						cnc.ConnectionOutputMulti(link.Reader),
+						cnc.ConnectionOnClose(cc),
+					)
+				} else {
+					log.Record(&log.AccessMessage{
+						From:   "DNS",
+						To:     s.dohURL,
+						Status: log.AccessAccepted,
+						Detour: "local",
+					})
+					conn, err = internet.DialSystem(ctx, dest, nil)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if !h2c {
+					conn = utls.UClient(conn, &utls.Config{ServerName: url.Hostname()}, utls.HelloChrome_Auto)
+					if err := conn.(*utls.UConn).HandshakeContext(ctx); err != nil {
+						return nil, err
+					}
+				}
+				return conn, nil
+			},
+		},
 	}
 	return s
 }
@@ -222,7 +208,7 @@ func (s *DoHNameServer) updateIP(req *dnsRequest, ipRec *IPRecord) {
 }
 
 func (s *DoHNameServer) newReqID() uint16 {
-	return uint16(atomic.AddUint32(&s.reqID, 1))
+	return 0
 }
 
 func (s *DoHNameServer) sendQuery(ctx context.Context, domain string, clientIP net.IP, option dns_feature.IPOption) {
@@ -295,6 +281,8 @@ func (s *DoHNameServer) dohHTTPSContext(ctx context.Context, b []byte) ([]byte, 
 	req.Header.Add("Accept", "application/dns-message")
 	req.Header.Add("Content-Type", "application/dns-message")
 
+	req.Header.Set("X-Padding", strings.Repeat("X", int(crypto.RandBetween(100, 1000))))
+
 	hc := s.httpClient
 
 	resp, err := hc.Do(req.WithContext(ctx))
@@ -365,7 +353,7 @@ func (s *DoHNameServer) QueryIP(ctx context.Context, domain string, clientIP net
 		errors.LogDebug(ctx, "DNS cache is disabled. Querying IP for ", domain, " at ", s.name)
 	} else {
 		ips, err := s.findIPsForDomain(fqdn, option)
-		if err != errRecordNotFound {
+		if err == nil || err == dns_feature.ErrEmptyResponse {
 			errors.LogDebugInner(ctx, err, s.name, " cache HIT ", domain, " -> ", ips)
 			log.Record(&log.DNSLog{Server: s.name, Domain: domain, Result: ips, Status: log.DNSCacheHit, Elapsed: 0, Error: err})
 			return ips, err

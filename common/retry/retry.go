@@ -1,7 +1,5 @@
 package retry // import "github.com/HZ-PRE/XrarCore/common/retry"
 
-//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
-
 import (
 	"time"
 

@@ -125,6 +125,41 @@ func (v *Validator) DetOnUsers() {
 	v.onDayUserSize = onDayUserSize
 }
 
+// GetByEmail Get a Shadowsocks user with a non-empty Email.
+func (v *Validator) GetByEmail(email string) *protocol.MemoryUser {
+	if email == "" {
+		return nil
+	}
+	email = strings.ToLower(email)
+	if value, ok := v.legacyUsers.Load(email); ok {
+		return value.(*protocol.MemoryUser)
+	}
+	if value, ok := v.users.Load(email); ok {
+		return value.(*protocol.MemoryUser)
+	}
+	return nil
+}
+
+// GetAll get all users
+func (v *Validator) GetAll() []*protocol.MemoryUser {
+	var u = make([]*protocol.MemoryUser, 0, 2000)
+	v.users.Range(func(key, value interface{}) bool {
+		u = append(u, value.(*protocol.MemoryUser))
+		return true
+	})
+	v.legacyUsers.Range(func(key, value interface{}) bool {
+		u = append(u, value.(*protocol.MemoryUser))
+		return true
+	})
+	v.userSize = len(u)
+	return u
+}
+
+// GetCount get users count
+func (v *Validator) GetCount() int64 {
+	return int64(v.userSize)
+}
+
 // Get a Shadowsocks user.
 func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	v.RLock()

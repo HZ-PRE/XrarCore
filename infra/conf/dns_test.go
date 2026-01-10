@@ -2,57 +2,15 @@ package conf_test
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/HZ-PRE/XrarCore/app/dns"
-	"github.com/HZ-PRE/XrarCore/app/router"
-	"github.com/HZ-PRE/XrarCore/common"
 	"github.com/HZ-PRE/XrarCore/common/net"
-	"github.com/HZ-PRE/XrarCore/common/platform"
-	"github.com/HZ-PRE/XrarCore/common/platform/filesystem"
 	. "github.com/HZ-PRE/XrarCore/infra/conf"
 	"google.golang.org/protobuf/proto"
 )
 
-func init() {
-	wd, err := os.Getwd()
-	common.Must(err)
-
-	if _, err := os.Stat(platform.GetAssetLocation("geoip.dat")); err != nil && os.IsNotExist(err) {
-		common.Must(filesystem.CopyFile(platform.GetAssetLocation("geoip.dat"), filepath.Join(wd, "..", "..", "resources", "geoip.dat")))
-	}
-
-	geositeFilePath := filepath.Join(wd, "geosite.dat")
-	os.Setenv("xray.location.asset", wd)
-	geositeFile, err := os.OpenFile(geositeFilePath, os.O_CREATE|os.O_WRONLY, 0o600)
-	common.Must(err)
-	defer geositeFile.Close()
-
-	list := &router.GeoSiteList{
-		Entry: []*router.GeoSite{
-			{
-				CountryCode: "TEST",
-				Domain: []*router.Domain{
-					{Type: router.Domain_Full, Value: "example.com"},
-				},
-			},
-		},
-	}
-
-	listBytes, err := proto.Marshal(list)
-	common.Must(err)
-	common.Must2(geositeFile.Write(listBytes))
-}
-
 func TestDNSConfigParsing(t *testing.T) {
-	geositePath := platform.GetAssetLocation("geosite.dat")
-	defer func() {
-		os.Remove(geositePath)
-		os.Unsetenv("xray.location.asset")
-	}()
-
 	parserCreator := func() func(string) (proto.Message, error) {
 		return func(s string) (proto.Message, error) {
 			config := new(DNSConfig)

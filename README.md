@@ -4,6 +4,12 @@
 
 [README](https://github.com/HZ-PRE/XrarCore#readme) is open, so feel free to submit your project [here](https://github.com/HZ-PRE/XrarCore/pulls).
 
+## Donation & NFTs
+
+- **ETH/USDT/USDC: `0xDc3Fe44F0f25D13CACb1C4896CD0D321df3146Ee`**
+- **Project X NFT: [Announcement of NFTs by Project X](https://github.com/HZ-PRE/XrarCore/discussions/3633)**
+- **REALITY NFT: [XHTTP: Beyond REALITY](https://github.com/HZ-PRE/XrarCore/discussions/4113)**
+
 ## License
 
 [Mozilla Public License Version 2.0](https://github.com/HZ-PRE/XrarCore/blob/main/LICENSE)
@@ -18,6 +24,10 @@
 
 [Project X Channel](https://t.me/projectXtls)
 
+[Project VLESS](https://t.me/projectVless) (Русский)
+
+[Project XHTTP](https://t.me/projectXhttp) (Persian)
+
 ## Installation
 
 - Linux Script
@@ -26,11 +36,11 @@
 - Docker
   - [ghcr.io/xtls/xray-core](https://ghcr.io/xtls/xray-core) (**Official**)
   - [teddysun/xray](https://hub.docker.com/r/teddysun/xray)
-- Web Panel
-  - [3X-UI](https://github.com/MHSanaei/3x-ui), [X-UI](https://github.com/alireza0/x-ui), [Xray-UI](https://github.com/qist/xray-ui)
-  - [Hiddify](https://github.com/hiddify/hiddify-config)
+  - [wulabing/xray_docker](https://github.com/wulabing/xray_docker)
+- Web Panel - **WARNING: Please DO NOT USE plain HTTP panels like 3X-UI**, as they are believed to be bribed by Iran GFW for supporting plain HTTP by default and refused to change (https://github.com/HZ-PRE/XrarCore/pull/3884#issuecomment-2439595331), which has already put many users' data security in danger in the past few years. **If you are already using 3X-UI, please switch to the following panels, which are verified to support HTTPS and SSH port forwarding only:**
   - [Marzban](https://github.com/Gozargah/Marzban)
-  - [Libertea](https://github.com/VZiChoushaDui/Libertea)
+  - [Xray-UI](https://github.com/qist/xray-ui)
+  - [Hiddify](https://github.com/hiddify/Hiddify-Manager)
 - One Click
   - [Xray-REALITY](https://github.com/zxcvos/Xray-script), [xray-reality](https://github.com/sajjaddg/xray-reality), [reality-ezpz](https://github.com/aleskxyz/reality-ezpz)
   - [Xray_bash_onekey](https://github.com/hello-yunshu/Xray_bash_onekey), [XTool](https://github.com/LordPenguin666/XTool)
@@ -64,6 +74,8 @@
   - [PassWall](https://github.com/xiaorouji/openwrt-passwall), [PassWall 2](https://github.com/xiaorouji/openwrt-passwall2)
   - [ShadowSocksR Plus+](https://github.com/fw876/helloworld)
   - [luci-app-xray](https://github.com/yichya/luci-app-xray) ([openwrt-xray](https://github.com/yichya/openwrt-xray))
+- Asuswrt-Merlin
+  - [XRAYUI](https://github.com/DanielLavrushin/asuswrt-merlin-xrayui)
 - Windows
   - [v2rayN](https://github.com/2dust/v2rayN)
   - [Furious](https://github.com/LorenEteval/Furious)
@@ -71,7 +83,9 @@
 - Android
   - [v2rayNG](https://github.com/2dust/v2rayNG)
   - [X-flutter](https://github.com/XTLS/X-flutter)
+  - [SaeedDev94/Xray](https://github.com/SaeedDev94/Xray)
 - iOS & macOS arm64
+  - [Happ](https://apps.apple.com/app/happ-proxy-utility/id6504287215)
   - [FoXray](https://apps.apple.com/app/foxray/id6448898396)
   - [Streisand](https://apps.apple.com/app/streisand/id6450534064)
 - macOS arm64 & x64
@@ -89,6 +103,7 @@
   - [Shadowrocket](https://apps.apple.com/app/shadowrocket/id932747118)
 - Xray Tools
   - [xray-knife](https://github.com/lilendian0x00/xray-knife)
+  - [xray-checker](https://github.com/kutovoys/xray-checker)
 - Xray Wrapper
   - [XTLS/libXray](https://github.com/XTLS/libXray)
   - [xtlsapi](https://github.com/hiddify/xtlsapi)
@@ -112,25 +127,27 @@
 - [Xray-core v1.0.0](https://github.com/HZ-PRE/XrarCore/releases/tag/v1.0.0) was forked from [v2fly-core 9a03cc5](https://github.com/v2fly/v2ray-core/commit/9a03cc5c98d04cc28320fcee26dbc236b3291256), and we have made & accumulated a huge number of enhancements over time, check [the release notes for each version](https://github.com/HZ-PRE/XrarCore/releases).
 - For third-party projects used in [Xray-core](https://github.com/HZ-PRE/XrarCore), check your local or [the latest go.mod](https://github.com/HZ-PRE/XrarCore/blob/main/go.mod).
 
-## Compilation
+## One-line Compilation
 
 ### Windows (PowerShell)
 
 ```powershell
 $env:CGO_ENABLED=0
-go build -o xray.exe -trimpath -ldflags "-s -w -buildid=" ./main
+go build -o xray.exe -trimpath -buildvcs=false -ldflags="-s -w -buildid=" -v ./main
 ```
 
 ### Linux / macOS
 
 ```bash
-CGO_ENABLED=0 go build -o xray -trimpath -ldflags "-s -w -buildid=" ./main
+CGO_ENABLED=0 go build -o xray -trimpath -buildvcs=false -ldflags="-s -w -buildid=" -v ./main
 ```
 
 ### Reproducible Releases
 
+Make sure that you are using the same Go version, and remember to set the git commit id (7 bytes):
+
 ```bash
-make
+CGO_ENABLED=0 go build -o xray -trimpath -buildvcs=false -ldflags="-X github.com/HZ-PRE/XrarCore/core.build=REPLACE -s -w -buildid=" -v ./main
 ```
 
 ## Stargazers over time

@@ -1,8 +1,6 @@
 // Package dns is an implementation of core.DNS feature.
 package dns
 
-//go:generate go run github.com/HZ-PRE/XrarCore/common/errors/errorgen
-
 import (
 	"context"
 	"fmt"
@@ -15,7 +13,6 @@ import (
 	"github.com/HZ-PRE/XrarCore/common/net"
 	"github.com/HZ-PRE/XrarCore/common/session"
 	"github.com/HZ-PRE/XrarCore/common/strmatcher"
-	"github.com/HZ-PRE/XrarCore/features"
 	"github.com/HZ-PRE/XrarCore/features/dns"
 )
 
@@ -79,7 +76,7 @@ func New(ctx context.Context, config *Config) (*DNS, error) {
 		}
 	}
 
-	hosts, err := NewStaticHosts(config.StaticHosts, config.Hosts)
+	hosts, err := NewStaticHosts(config.StaticHosts)
 	if err != nil {
 		return nil, errors.New("failed to create hosts").Base(err)
 	}
@@ -94,15 +91,6 @@ func New(ctx context.Context, config *Config) (*DNS, error) {
 	matcherInfos := make([]*DomainMatcherInfo, domainRuleCount+1)
 	domainMatcher := &strmatcher.MatcherGroup{}
 	geoipContainer := router.GeoIPMatcherContainer{}
-
-	for _, endpoint := range config.NameServers {
-		features.PrintDeprecatedFeatureWarning("simple DNS server")
-		client, err := NewSimpleClient(ctx, endpoint, clientIP)
-		if err != nil {
-			return nil, errors.New("failed to create client").Base(err)
-		}
-		clients = append(clients, client)
-	}
 
 	for _, ns := range config.NameServer {
 		clientIdx := len(clients)

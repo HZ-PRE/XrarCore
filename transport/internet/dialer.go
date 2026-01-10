@@ -2,6 +2,9 @@ package internet
 
 import (
 	"context"
+	"fmt"
+	gonet "net"
+	"strings"
 
 	"github.com/HZ-PRE/XrarCore/common"
 	"github.com/HZ-PRE/XrarCore/common/dice"
@@ -123,15 +126,108 @@ func redirect(ctx context.Context, dst net.Destination, obt string) net.Conn {
 		ur, uw := pipe.New(pipe.OptionsFromContext(ctx)...)
 		dr, dw := pipe.New(pipe.OptionsFromContext(ctx)...)
 
-		go h.Dispatch(ctx, &transport.Link{Reader: ur, Writer: dw})
+		go h.Dispatch(context.WithoutCancel(ctx), &transport.Link{Reader: ur, Writer: dw})
+		var readerOpt cnc.ConnectionOption
+		if dst.Network == net.Network_TCP {
+			readerOpt = cnc.ConnectionOutputMulti(dr)
+		} else {
+			readerOpt = cnc.ConnectionOutputMultiUDP(dr)
+		}
 		nc := cnc.NewConnection(
 			cnc.ConnectionInputMulti(uw),
-			cnc.ConnectionOutputMulti(dr),
+			readerOpt,
 			cnc.ConnectionOnClose(common.ChainedClosable{uw, dw}),
 		)
 		return nc
 	}
 	return nil
+}
+
+func checkAddressPortStrategy(ctx context.Context, dest net.Destination, sockopt *SocketConfig) (*net.Destination, error) {
+	if sockopt.AddressPortStrategy == AddressPortStrategy_None {
+		return nil, nil
+	}
+	newDest := dest
+	var OverridePort, OverrideAddress bool
+	var OverrideBy string
+	switch sockopt.AddressPortStrategy {
+	case AddressPortStrategy_SrvPortOnly:
+		OverridePort = true
+		OverrideAddress = false
+		OverrideBy = "srv"
+	case AddressPortStrategy_SrvAddressOnly:
+		OverridePort = false
+		OverrideAddress = true
+		OverrideBy = "srv"
+	case AddressPortStrategy_SrvPortAndAddress:
+		OverridePort = true
+		OverrideAddress = true
+		OverrideBy = "srv"
+	case AddressPortStrategy_TxtPortOnly:
+		OverridePort = true
+		OverrideAddress = false
+		OverrideBy = "txt"
+	case AddressPortStrategy_TxtAddressOnly:
+		OverridePort = false
+		OverrideAddress = true
+		OverrideBy = "txt"
+	case AddressPortStrategy_TxtPortAndAddress:
+		OverridePort = true
+		OverrideAddress = true
+		OverrideBy = "txt"
+	default:
+		return nil, errors.New("unknown AddressPortStrategy")
+	}
+
+	if !dest.Address.Family().IsDomain() {
+		return nil, nil
+	}
+
+	if OverrideBy == "srv" {
+		errors.LogDebug(ctx, "query SRV record for "+dest.Address.String())
+		parts := strings.SplitN(dest.Address.String(), ".", 3)
+		if len(parts) != 3 {
+			return nil, errors.New("invalid address format", dest.Address.String())
+		}
+		_, srvRecords, err := gonet.DefaultResolver.LookupSRV(context.Background(), parts[0][1:], parts[1][1:], parts[2])
+		if err != nil {
+			return nil, errors.New("failed to lookup SRV record").Base(err)
+		}
+		errors.LogDebug(ctx, "SRV record: "+fmt.Sprintf("addr=%s, port=%d, priority=%d, weight=%d", srvRecords[0].Target, srvRecords[0].Port, srvRecords[0].Priority, srvRecords[0].Weight))
+		if OverridePort {
+			newDest.Port = net.Port(srvRecords[0].Port)
+		}
+		if OverrideAddress {
+			newDest.Address = net.ParseAddress(srvRecords[0].Target)
+		}
+		return &newDest, nil
+	}
+	if OverrideBy == "txt" {
+		errors.LogDebug(ctx, "query TXT record for "+dest.Address.String())
+		txtRecords, err := gonet.DefaultResolver.LookupTXT(ctx, dest.Address.String())
+		if err != nil {
+			errors.LogError(ctx, "failed to lookup SRV record: "+err.Error())
+			return nil, errors.New("failed to lookup SRV record").Base(err)
+		}
+		for _, txtRecord := range txtRecords {
+			errors.LogDebug(ctx, "TXT record: "+txtRecord)
+			addr_s, port_s, _ := net.SplitHostPort(string(txtRecord))
+			addr := net.ParseAddress(addr_s)
+			port, err := net.PortFromString(port_s)
+			if err != nil {
+				continue
+			}
+
+			if OverridePort {
+				newDest.Port = port
+			}
+			if OverrideAddress {
+				newDest.Address = addr
+			}
+			return &newDest, nil
+		}
+	}
+	return nil, nil
 }
 
 // DialSystem calls system dialer to create a network connection.
@@ -144,6 +240,11 @@ func DialSystem(ctx context.Context, dest net.Destination, sockopt *SocketConfig
 	}
 	if sockopt == nil {
 		return effectiveSystemDialer.Dial(ctx, src, dest, sockopt)
+	}
+
+	if newDest, err := checkAddressPortStrategy(ctx, dest, sockopt); err == nil && newDest != nil {
+		errors.LogInfo(ctx, "replace destination with "+newDest.String())
+		dest = *newDest
 	}
 
 	if canLookupIP(ctx, dest, sockopt) {

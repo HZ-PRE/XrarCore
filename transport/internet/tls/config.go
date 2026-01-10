@@ -1,12 +1,15 @@
 package tls
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -50,70 +53,82 @@ func (c *Config) BuildCertificates() []*tls.Certificate {
 		if entry.Usage != Certificate_ENCIPHERMENT {
 			continue
 		}
-		keyPair, err := tls.X509KeyPair(entry.Certificate, entry.Key)
-		if err != nil {
-			errors.LogWarningInner(context.Background(), err, "ignoring invalid X509 key pair")
-			continue
-		}
-		keyPair.Leaf, err = x509.ParseCertificate(keyPair.Certificate[0])
-		if err != nil {
-			errors.LogWarningInner(context.Background(), err, "ignoring invalid certificate")
-			continue
-		}
-		certs = append(certs, &keyPair)
-		if !entry.OneTimeLoading {
-			var isOcspstapling bool
-			hotReloadCertInterval := uint64(3600)
-			if entry.OcspStapling != 0 {
-				hotReloadCertInterval = entry.OcspStapling
-				isOcspstapling = true
+		getX509KeyPair := func() *tls.Certificate {
+			keyPair, err := tls.X509KeyPair(entry.Certificate, entry.Key)
+			if err != nil {
+				errors.LogWarningInner(context.Background(), err, "ignoring invalid X509 key pair")
+				return nil
 			}
-			index := len(certs) - 1
-			go func(entry *Certificate, cert *tls.Certificate, index int) {
-				t := time.NewTicker(time.Duration(hotReloadCertInterval) * time.Second)
-				for {
-					if entry.CertificatePath != "" && entry.KeyPath != "" {
-						newCert, err := filesystem.ReadFile(entry.CertificatePath)
-						if err != nil {
-							errors.LogErrorInner(context.Background(), err, "failed to parse certificate")
-							<-t.C
-							continue
-						}
-						newKey, err := filesystem.ReadFile(entry.KeyPath)
-						if err != nil {
-							errors.LogErrorInner(context.Background(), err, "failed to parse key")
-							<-t.C
-							continue
-						}
-						if string(newCert) != string(entry.Certificate) && string(newKey) != string(entry.Key) {
-							newKeyPair, err := tls.X509KeyPair(newCert, newKey)
-							if err != nil {
-								errors.LogErrorInner(context.Background(), err, "ignoring invalid X509 key pair")
-								<-t.C
-								continue
-							}
-							if newKeyPair.Leaf, err = x509.ParseCertificate(newKeyPair.Certificate[0]); err != nil {
-								errors.LogErrorInner(context.Background(), err, "ignoring invalid certificate")
-								<-t.C
-								continue
-							}
-							cert = &newKeyPair
-						}
-					}
-					if isOcspstapling {
-						if newOCSPData, err := ocsp.GetOCSPForCert(cert.Certificate); err != nil {
-							errors.LogWarningInner(context.Background(), err, "ignoring invalid OCSP")
-						} else if string(newOCSPData) != string(cert.OCSPStaple) {
-							cert.OCSPStaple = newOCSPData
-						}
-					}
-					certs[index] = cert
-					<-t.C
-				}
-			}(entry, certs[index], index)
+			keyPair.Leaf, err = x509.ParseCertificate(keyPair.Certificate[0])
+			if err != nil {
+				errors.LogWarningInner(context.Background(), err, "ignoring invalid certificate")
+				return nil
+			}
+			return &keyPair
 		}
+		if keyPair := getX509KeyPair(); keyPair != nil {
+			certs = append(certs, keyPair)
+		} else {
+			continue
+		}
+		index := len(certs) - 1
+		setupOcspTicker(entry, func(isReloaded, isOcspstapling bool) {
+			cert := certs[index]
+			if isReloaded {
+				if newKeyPair := getX509KeyPair(); newKeyPair != nil {
+					cert = newKeyPair
+				} else {
+					return
+				}
+			}
+			if isOcspstapling {
+				if newOCSPData, err := ocsp.GetOCSPForCert(cert.Certificate); err != nil {
+					errors.LogWarningInner(context.Background(), err, "ignoring invalid OCSP")
+				} else if string(newOCSPData) != string(cert.OCSPStaple) {
+					cert.OCSPStaple = newOCSPData
+				}
+			}
+			certs[index] = cert
+		})
 	}
 	return certs
+}
+
+func setupOcspTicker(entry *Certificate, callback func(isReloaded, isOcspstapling bool)) {
+	go func() {
+		if entry.OneTimeLoading {
+			return
+		}
+		var isOcspstapling bool
+		hotReloadCertInterval := uint64(3600)
+		if entry.OcspStapling != 0 {
+			hotReloadCertInterval = entry.OcspStapling
+			isOcspstapling = true
+		}
+		t := time.NewTicker(time.Duration(hotReloadCertInterval) * time.Second)
+		for {
+			var isReloaded bool
+			if entry.CertificatePath != "" && entry.KeyPath != "" {
+				newCert, err := filesystem.ReadFile(entry.CertificatePath)
+				if err != nil {
+					errors.LogErrorInner(context.Background(), err, "failed to parse certificate")
+					return
+				}
+				newKey, err := filesystem.ReadFile(entry.KeyPath)
+				if err != nil {
+					errors.LogErrorInner(context.Background(), err, "failed to parse key")
+					return
+				}
+				if string(newCert) != string(entry.Certificate) || string(newKey) != string(entry.Key) {
+					entry.Certificate = newCert
+					entry.Key = newKey
+					isReloaded = true
+				}
+			}
+			callback(isReloaded, isOcspstapling)
+			<-t.C
+		}
+	}()
 }
 
 func isCertificateExpired(c *tls.Certificate) bool {
@@ -137,6 +152,9 @@ func issueCertificate(rawCA *Certificate, domain string) (*tls.Certificate, erro
 		return nil, errors.New("failed to generate new certificate for ", domain).Base(err)
 	}
 	newCertPEM, newKeyPEM := newCert.ToPEM()
+	if rawCA.BuildChain {
+		newCertPEM = bytes.Join([][]byte{newCertPEM, rawCA.Certificate}, []byte("\n"))
+	}
 	cert, err := tls.X509KeyPair(newCertPEM, newKeyPEM)
 	return &cert, err
 }
@@ -146,6 +164,7 @@ func (c *Config) getCustomCA() []*Certificate {
 	for _, certificate := range c.Certificate {
 		if certificate.Usage == Certificate_AUTHORITY_ISSUE {
 			certs = append(certs, certificate)
+			setupOcspTicker(certificate, func(isReloaded, isOcspstapling bool) {})
 		}
 	}
 	return certs
@@ -259,10 +278,35 @@ func (c *Config) parseServerName() string {
 	return c.ServerName
 }
 
-func (c *Config) verifyPeerCert(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-	if c.PinnedPeerCertificateChainSha256 != nil {
+func (r *RandCarrier) verifyPeerCert(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	if r.VerifyPeerCertInNames != nil {
+		if len(r.VerifyPeerCertInNames) > 0 {
+			certs := make([]*x509.Certificate, len(rawCerts))
+			for i, asn1Data := range rawCerts {
+				certs[i], _ = x509.ParseCertificate(asn1Data)
+			}
+			opts := x509.VerifyOptions{
+				Roots:         r.RootCAs,
+				CurrentTime:   time.Now(),
+				Intermediates: x509.NewCertPool(),
+			}
+			for _, cert := range certs[1:] {
+				opts.Intermediates.AddCert(cert)
+			}
+			for _, opts.DNSName = range r.VerifyPeerCertInNames {
+				if _, err := certs[0].Verify(opts); err == nil {
+					return nil
+				}
+			}
+		}
+		if r.PinnedPeerCertificateChainSha256 == nil {
+			return errors.New("peer cert is invalid.")
+		}
+	}
+
+	if r.PinnedPeerCertificateChainSha256 != nil {
 		hashValue := GenerateCertChainHash(rawCerts)
-		for _, v := range c.PinnedPeerCertificateChainSha256 {
+		for _, v := range r.PinnedPeerCertificateChainSha256 {
 			if hmac.Equal(hashValue, v) {
 				return nil
 			}
@@ -270,11 +314,11 @@ func (c *Config) verifyPeerCert(rawCerts [][]byte, verifiedChains [][]*x509.Cert
 		return errors.New("peer cert is unrecognized: ", base64.StdEncoding.EncodeToString(hashValue))
 	}
 
-	if c.PinnedPeerCertificatePublicKeySha256 != nil {
+	if r.PinnedPeerCertificatePublicKeySha256 != nil {
 		for _, v := range verifiedChains {
 			for _, cert := range v {
 				publicHash := GenerateCertPublicKeyHash(cert)
-				for _, c := range c.PinnedPeerCertificatePublicKeySha256 {
+				for _, c := range r.PinnedPeerCertificatePublicKeySha256 {
 					if hmac.Equal(publicHash, c) {
 						return nil
 					}
@@ -284,6 +328,17 @@ func (c *Config) verifyPeerCert(rawCerts [][]byte, verifiedChains [][]*x509.Cert
 		return errors.New("peer public key is unrecognized.")
 	}
 	return nil
+}
+
+type RandCarrier struct {
+	RootCAs                              *x509.CertPool
+	VerifyPeerCertInNames                []string
+	PinnedPeerCertificateChainSha256     [][]byte
+	PinnedPeerCertificatePublicKeySha256 [][]byte
+}
+
+func (r *RandCarrier) Read(p []byte) (n int, err error) {
+	return rand.Read(p)
 }
 
 // GetTLSConfig converts this Config into tls.Config.
@@ -303,13 +358,25 @@ func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
 		}
 	}
 
+	randCarrier := &RandCarrier{
+		RootCAs:                              root,
+		VerifyPeerCertInNames:                slices.Clone(c.VerifyPeerCertInNames),
+		PinnedPeerCertificateChainSha256:     c.PinnedPeerCertificateChainSha256,
+		PinnedPeerCertificatePublicKeySha256: c.PinnedPeerCertificatePublicKeySha256,
+	}
 	config := &tls.Config{
+		Rand:                   randCarrier,
 		ClientSessionCache:     globalSessionCache,
 		RootCAs:                root,
 		InsecureSkipVerify:     c.AllowInsecure,
-		NextProtos:             c.NextProtocol,
+		NextProtos:             slices.Clone(c.NextProtocol),
 		SessionTicketsDisabled: !c.EnableSessionResumption,
-		VerifyPeerCertificate:  c.verifyPeerCert,
+		VerifyPeerCertificate:  randCarrier.verifyPeerCert,
+	}
+	if len(c.VerifyPeerCertInNames) > 0 {
+		config.InsecureSkipVerify = true
+	} else {
+		randCarrier.VerifyPeerCertInNames = nil
 	}
 
 	for _, opt := range opts {
@@ -325,6 +392,10 @@ func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
 
 	if sn := c.parseServerName(); len(sn) > 0 {
 		config.ServerName = sn
+	}
+
+	if len(c.CurvePreferences) > 0 {
+		config.CurvePreferences = ParseCurveName(c.CurvePreferences)
 	}
 
 	if len(config.NextProtos) == 0 {
@@ -411,4 +482,24 @@ func ConfigFromStreamSettings(settings *internet.MemoryStreamConfig) *Config {
 		return nil
 	}
 	return config
+}
+
+func ParseCurveName(curveNames []string) []tls.CurveID {
+	curveMap := map[string]tls.CurveID{
+		"curvep256":             tls.CurveP256,
+		"curvep384":             tls.CurveP384,
+		"curvep521":             tls.CurveP521,
+		"x25519":                tls.X25519,
+		"x25519kyber768draft00": 0x6399,
+	}
+
+	var curveIDs []tls.CurveID
+	for _, name := range curveNames {
+		if curveID, ok := curveMap[strings.ToLower(name)]; ok {
+			curveIDs = append(curveIDs, curveID)
+		} else {
+			errors.LogWarning(context.Background(), "unsupported curve name: "+name)
+		}
+	}
+	return curveIDs
 }
