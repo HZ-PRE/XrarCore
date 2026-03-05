@@ -20,6 +20,7 @@ import (
 type Validator struct {
 	sync.RWMutex
 	users          sync.Map
+	usersByUUID    sync.Map
 	userSize       int
 	legacyUsers    sync.Map
 	onUsers        sync.Map
@@ -48,12 +49,19 @@ func (v *Validator) Add(u *protocol.MemoryUser) error {
 
 	account := u.Account.(*MemoryAccount)
 	email := strings.ToLower(u.Email)
+	uuid := strings.ToLower(account.Password)
 	v.userSize = v.userSize + 1
 	if !account.Cipher.IsAEAD() {
 		v.legacyUsers.Store(email, u)
+		if uuid != "" {
+			v.usersByUUID.Store(uuid, u)
+		}
 		return nil
 	}
 	v.users.Store(email, u)
+	if uuid != "" {
+		v.usersByUUID.Store(uuid, u)
+	}
 	if !v.behaviorFused {
 		hashkdf := hmac.New(sha256.New, []byte("SSBSKDF"))
 		hashkdf.Write(account.Key)
@@ -72,8 +80,19 @@ func (v *Validator) Del(email string) error {
 	defer v.Unlock()
 
 	email = strings.ToLower(email)
-	if _, ok := v.users.Load(email); !ok {
+	var user *protocol.MemoryUser
+	if value, ok := v.users.Load(email); ok {
+		user = value.(*protocol.MemoryUser)
+	}
+	if value, ok := v.legacyUsers.Load(email); ok && user == nil {
+		user = value.(*protocol.MemoryUser)
+	}
+	if user == nil {
 		return nil
+	}
+	account := user.Account.(*MemoryAccount)
+	if account.Password != "" {
+		v.usersByUUID.Delete(strings.ToLower(account.Password))
 	}
 	v.onUsers.Delete(email)
 	v.onHourUsers.Delete(email)
@@ -140,6 +159,18 @@ func (v *Validator) GetByEmail(email string) *protocol.MemoryUser {
 	return nil
 }
 
+// GetByUUID gets a Shadowsocks user by uuid (uuid is stored in user.Account.Password).
+func (v *Validator) GetByUUID(uuid string) *protocol.MemoryUser {
+	if uuid == "" {
+		return nil
+	}
+	uuid = strings.ToLower(uuid)
+	if value, ok := v.usersByUUID.Load(uuid); ok {
+		return value.(*protocol.MemoryUser)
+	}
+	return nil
+}
+
 // GetAll get all users
 func (v *Validator) GetAll() []*protocol.MemoryUser {
 	var u = make([]*protocol.MemoryUser, 0, 2000)
@@ -160,6 +191,41 @@ func (v *Validator) GetCount() int64 {
 	return int64(v.userSize)
 }
 
+func extractUUIDFromPayload(payload []byte) string {
+	// Request payload format: ATYP(1) + UUID(16) + DST.ADDR + DST.PORT + DATA
+	if len(payload) < 17 {
+		return ""
+	}
+	return strings.ToLower(bytesToUUIDString(payload[1:17]))
+}
+
+func bytesToUUIDString(b []byte) string {
+	if len(b) != 16 {
+		return ""
+	}
+	hex := "0123456789abcdef"
+	out := make([]byte, 36)
+	p := 0
+	for i := 0; i < 16; i++ {
+		if i == 4 || i == 6 || i == 8 || i == 10 {
+			out[p] = '-'
+			p++
+		}
+		out[p] = hex[b[i]>>4]
+		out[p+1] = hex[b[i]&0x0f]
+		p += 2
+	}
+	return string(out)
+}
+
+func (v *Validator) resolveUserByPayloadUUID(payload []byte) *protocol.MemoryUser {
+	uuid := extractUUIDFromPayload(payload)
+	if uuid == "" {
+		return nil
+	}
+	return v.GetByUUID(uuid)
+}
+
 // Get a Shadowsocks user.
 func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	v.RLock()
@@ -174,77 +240,88 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		})
 		return
 	}
-	if v.onUserSize < 3000 {
-		v.onUsers.Range(func(key, value interface{}) bool {
-			if user, ok := v.users.Load(key); ok {
-				u1 := user.(*protocol.MemoryUser)
-				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-				if u == nil {
-					return true
-				}
-				return false
-			}
-			return true
+	v.users.Range(func(key, value interface{}) bool {
+		u = value.(*protocol.MemoryUser)
+		u, aead, ret, ivLen, err = checkAEADAndMatchV1(bs, u, command)
+		if byUUID := v.resolveUserByPayloadUUID(ret); byUUID != nil {
+			u = byUUID
+		}
+		return false
+	})
+	if u != nil {
+		return
+	}
+	// if v.onUserSize < 3000 {
+	// 	v.onUsers.Range(func(key, value interface{}) bool {
+	// 		if user, ok := v.users.Load(key); ok {
+	// 			u1 := user.(*protocol.MemoryUser)
+	// 			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+	// 			if u == nil {
+	// 				return true
+	// 			}
+	// 			return false
+	// 		}
+	// 		return true
 
-		})
-	} else {
-		u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, &v.onUsers, bs, command, 3000)
-	}
-	if u != nil {
-		v.touchUser(u.Email)
-		return
-	}
-	if v.onHourUserSize < 5000 {
-		v.onHourUsers.Range(func(key, value interface{}) bool {
-			if _, ok := v.onUsers.Load(key); ok {
-				return true
-			}
-			if user, ok := v.users.Load(key); ok {
-				u1 := user.(*protocol.MemoryUser)
-				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-				if u == nil {
-					return true
-				}
-				return false
-			}
-			return true
+	// 	})
+	// } else {
+	// 	u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, &v.onUsers, bs, command, 3000)
+	// }
+	// if u != nil {
+	// 	v.touchUser(u.Email)
+	// 	return
+	// }
+	// if v.onHourUserSize < 5000 {
+	// 	v.onHourUsers.Range(func(key, value interface{}) bool {
+	// 		if _, ok := v.onUsers.Load(key); ok {
+	// 			return true
+	// 		}
+	// 		if user, ok := v.users.Load(key); ok {
+	// 			u1 := user.(*protocol.MemoryUser)
+	// 			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+	// 			if u == nil {
+	// 				return true
+	// 			}
+	// 			return false
+	// 		}
+	// 		return true
 
-		})
-	} else {
-		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onUsers, &v.users, &v.onHourUsers, bs, command, 5000)
-	}
-	if u != nil {
-		v.touchUser(u.Email)
-		return
-	}
-	if v.onDayUserSize < 7000 {
-		v.onDayUsers.Range(func(key, value interface{}) bool {
-			if _, ok := v.onHourUsers.Load(key); ok {
-				return true
-			}
-			if user, ok := v.users.Load(key); ok {
-				u1 := user.(*protocol.MemoryUser)
-				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-				if u == nil {
-					return true
-				}
-				return false
-			}
-			return true
+	// 	})
+	// } else {
+	// 	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onUsers, &v.users, &v.onHourUsers, bs, command, 5000)
+	// }
+	// if u != nil {
+	// 	v.touchUser(u.Email)
+	// 	return
+	// }
+	// if v.onDayUserSize < 7000 {
+	// 	v.onDayUsers.Range(func(key, value interface{}) bool {
+	// 		if _, ok := v.onHourUsers.Load(key); ok {
+	// 			return true
+	// 		}
+	// 		if user, ok := v.users.Load(key); ok {
+	// 			u1 := user.(*protocol.MemoryUser)
+	// 			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+	// 			if u == nil {
+	// 				return true
+	// 			}
+	// 			return false
+	// 		}
+	// 		return true
 
-		})
-	} else {
-		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onHourUsers, &v.users, &v.onDayUsers, bs, command, 7000)
-	}
-	if u != nil {
-		v.touchUser(u.Email)
-		return
-	}
-	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onDayUsers, nil, &v.users, bs, command, 14000)
-	if u != nil {
-		v.touchUser(u.Email)
-		return
-	}
+	// 	})
+	// } else {
+	// 	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onHourUsers, &v.users, &v.onDayUsers, bs, command, 7000)
+	// }
+	// if u != nil {
+	// 	v.touchUser(u.Email)
+	// 	return
+	// }
+	// u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onDayUsers, nil, &v.users, bs, command, 14000)
+	// if u != nil {
+	// 	v.touchUser(u.Email)
+	// 	return
+	// }
 	return nil, nil, nil, 0, ErrNotFound
 }
 
@@ -354,6 +431,7 @@ func (v *Validator) touchUser(email string) {
 	v.onDayUsers.Store(email, now)
 }
 
+// Shadowsocks 格式是 ATYP + uuid + DST.ADDR + DST.PORT + DATA   这里解密后获取uuid，uuid就是user.Account.Password，获取uuid从Validator.users中拿去用户信息
 func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	account := user.Account.(*MemoryAccount)
 	aeadCipher := account.Cipher.(*AEADCipher)
@@ -382,7 +460,34 @@ func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.Re
 	}
 	return nil, nil, nil, 0, matchErr
 }
-
+func checkAEADAndMatchV1(bs []byte, user *protocol.MemoryUser, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
+	account := user.Account.(*MemoryAccount)
+	aeadCipher := account.Cipher.(*AEADCipher)
+	ivLen = aeadCipher.IVSize()
+	if ivLen < 8 {
+		return
+	}
+	iv := bs[:ivLen]
+	subkey := make([]byte, 32)
+	subkey = subkey[:aeadCipher.KeyBytes]
+	hkdfSHA1(passwordToCipherKey([]byte("1e369876-9034-4543-a70b-56b337e9f0a1"), aeadCipher.KeySize()), iv, subkey)
+	aead = aeadCipher.AEADAuthCreator(subkey)
+	var matchErr error
+	switch command {
+	case protocol.RequestCommandTCP:
+		data := make([]byte, 4+aead.NonceSize())
+		ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
+	case protocol.RequestCommandUDP:
+		data := make([]byte, 8192)
+		ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
+	}
+	if matchErr == nil {
+		u = user
+		err = account.CheckIV(iv)
+		return
+	}
+	return nil, nil, nil, 0, matchErr
+}
 func (v *Validator) GetBehaviorSeed() uint64 {
 	v.Lock()
 	defer v.Unlock()
