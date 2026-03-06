@@ -263,77 +263,77 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 	if u != nil {
 		return
 	}
-	// if v.onUserSize < 3000 {
-	// 	v.onUsers.Range(func(key, value interface{}) bool {
-	// 		if user, ok := v.users.Load(key); ok {
-	// 			u1 := user.(*protocol.MemoryUser)
-	// 			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-	// 			if u == nil {
-	// 				return true
-	// 			}
-	// 			return false
-	// 		}
-	// 		return true
+	if v.onUserSize < 3000 {
+		v.onUsers.Range(func(key, value interface{}) bool {
+			if user, ok := v.users.Load(key); ok {
+				u1 := user.(*protocol.MemoryUser)
+				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+				if u == nil {
+					return true
+				}
+				return false
+			}
+			return true
 
-	// 	})
-	// } else {
-	// 	u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, &v.onUsers, bs, command, 3000)
-	// }
-	// if u != nil {
-	// 	v.touchUser(u.Email)
-	// 	return
-	// }
-	// if v.onHourUserSize < 5000 {
-	// 	v.onHourUsers.Range(func(key, value interface{}) bool {
-	// 		if _, ok := v.onUsers.Load(key); ok {
-	// 			return true
-	// 		}
-	// 		if user, ok := v.users.Load(key); ok {
-	// 			u1 := user.(*protocol.MemoryUser)
-	// 			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-	// 			if u == nil {
-	// 				return true
-	// 			}
-	// 			return false
-	// 		}
-	// 		return true
+		})
+	} else {
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, &v.onUsers, bs, command, 3000)
+	}
+	if u != nil {
+		v.touchUser(u.Email)
+		return
+	}
+	if v.onHourUserSize < 5000 {
+		v.onHourUsers.Range(func(key, value interface{}) bool {
+			if _, ok := v.onUsers.Load(key); ok {
+				return true
+			}
+			if user, ok := v.users.Load(key); ok {
+				u1 := user.(*protocol.MemoryUser)
+				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+				if u == nil {
+					return true
+				}
+				return false
+			}
+			return true
 
-	// 	})
-	// } else {
-	// 	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onUsers, &v.users, &v.onHourUsers, bs, command, 5000)
-	// }
-	// if u != nil {
-	// 	v.touchUser(u.Email)
-	// 	return
-	// }
-	// if v.onDayUserSize < 7000 {
-	// 	v.onDayUsers.Range(func(key, value interface{}) bool {
-	// 		if _, ok := v.onHourUsers.Load(key); ok {
-	// 			return true
-	// 		}
-	// 		if user, ok := v.users.Load(key); ok {
-	// 			u1 := user.(*protocol.MemoryUser)
-	// 			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
-	// 			if u == nil {
-	// 				return true
-	// 			}
-	// 			return false
-	// 		}
-	// 		return true
+		})
+	} else {
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onUsers, &v.users, &v.onHourUsers, bs, command, 5000)
+	}
+	if u != nil {
+		v.touchUser(u.Email)
+		return
+	}
+	if v.onDayUserSize < 7000 {
+		v.onDayUsers.Range(func(key, value interface{}) bool {
+			if _, ok := v.onHourUsers.Load(key); ok {
+				return true
+			}
+			if user, ok := v.users.Load(key); ok {
+				u1 := user.(*protocol.MemoryUser)
+				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+				if u == nil {
+					return true
+				}
+				return false
+			}
+			return true
 
-	// 	})
-	// } else {
-	// 	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onHourUsers, &v.users, &v.onDayUsers, bs, command, 7000)
-	// }
-	// if u != nil {
-	// 	v.touchUser(u.Email)
-	// 	return
-	// }
-	// u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onDayUsers, nil, &v.users, bs, command, 14000)
-	// if u != nil {
-	// 	v.touchUser(u.Email)
-	// 	return
-	// }
+		})
+	} else {
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onHourUsers, &v.users, &v.onDayUsers, bs, command, 7000)
+	}
+	if u != nil {
+		v.touchUser(u.Email)
+		return
+	}
+	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onDayUsers, nil, &v.users, bs, command, 14000)
+	if u != nil {
+		v.touchUser(u.Email)
+		return
+	}
 	return nil, nil, nil, 0, ErrNotFound
 }
 
