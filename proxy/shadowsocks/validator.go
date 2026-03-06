@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
+	"fmt"
 	"hash/crc64"
 	"runtime"
 	"strings"
@@ -220,6 +221,7 @@ func bytesToUUIDString(b []byte) string {
 
 func (v *Validator) resolveUserByPayloadUUID(payload []byte) *protocol.MemoryUser {
 	uuid := extractUUIDFromPayload(payload)
+	fmt.Println("获取uuid成功：%s", uuid)
 	if uuid == "" {
 		return nil
 	}
