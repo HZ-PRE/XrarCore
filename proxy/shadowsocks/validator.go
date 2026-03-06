@@ -246,6 +246,8 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 	v.users.Range(func(key, value interface{}) bool {
 		u = value.(*protocol.MemoryUser)
 		u, aead, ret, ivLen, err = checkAEADAndMatchV1(bs, u, command)
+		fmt.Printf("bs原生 len=%d, hex=%x\n", len(bs), bs)
+		fmt.Printf("解1ret len=%d, hex=%x\n", len(ret), ret)
 		if byUUID := v.resolveUserByPayloadUUID(ret); byUUID != nil {
 			fmt.Printf("获取uuid1成功：%s", byUUID)
 			// 深拷贝 MemoryAccount
@@ -284,6 +286,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, &v.onUsers, bs, command, 3000)
 	}
 	if u != nil {
+		fmt.Printf("解ret len=%d, hex=%x\n", len(ret), ret)
 		v.touchUser(u.Email)
 		return
 	}
