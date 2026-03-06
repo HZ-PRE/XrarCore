@@ -13,7 +13,7 @@ import (
 func TestAEADCipherUDP(t *testing.T) {
 	rawAccount := &shadowsocks.Account{
 		CipherType: shadowsocks.CipherType_AES_128_GCM,
-		Password:   "test",
+		Password:   "1e369876-9034-4543-a70b-56b337e9f0a1",
 	}
 	account, err := rawAccount.AsAccount()
 	common.Must(err)

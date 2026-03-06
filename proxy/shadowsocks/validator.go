@@ -194,6 +194,7 @@ func (v *Validator) GetCount() int64 {
 
 func extractUUIDFromPayload(payload []byte) string {
 	// Request payload format: ATYP(1) + UUID(16) + DST.ADDR + DST.PORT + DATA
+	fmt.Printf("payload len=%d, hex=%x\n", len(payload), payload)
 	if len(payload) < 17 {
 		return ""
 	}
@@ -221,7 +222,7 @@ func bytesToUUIDString(b []byte) string {
 
 func (v *Validator) resolveUserByPayloadUUID(payload []byte) *protocol.MemoryUser {
 	uuid := extractUUIDFromPayload(payload)
-	fmt.Println("获取uuid成功：%s", uuid)
+	fmt.Printf("获取uuid成功：%s", uuid)
 	if uuid == "" {
 		return nil
 	}
@@ -246,7 +247,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u = value.(*protocol.MemoryUser)
 		u, aead, ret, ivLen, err = checkAEADAndMatchV1(bs, u, command)
 		if byUUID := v.resolveUserByPayloadUUID(ret); byUUID != nil {
-			fmt.Println("获取uuid1成功：%s", byUUID)
+			fmt.Printf("获取uuid1成功：%s", byUUID)
 			// 深拷贝 MemoryAccount
 			oldAccount := byUUID.Account.(*MemoryAccount)
 			account := *oldAccount
@@ -257,6 +258,9 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 			newUser := *byUUID
 			newUser.Account = &account
 			u = &newUser
+			if len(ret) > 17 {
+				ret = append(ret[:1], ret[17:]...)
+			}
 		}
 		return false
 	})
