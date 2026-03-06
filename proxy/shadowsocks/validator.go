@@ -244,7 +244,16 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u = value.(*protocol.MemoryUser)
 		u, aead, ret, ivLen, err = checkAEADAndMatchV1(bs, u, command)
 		if byUUID := v.resolveUserByPayloadUUID(ret); byUUID != nil {
-			u = byUUID
+			// 深拷贝 MemoryAccount
+			oldAccount := byUUID.Account.(*MemoryAccount)
+			account := *oldAccount
+			aeadCipher := account.Cipher.(*AEADCipher)
+			account.Password = "1e369876-9034-4543-a70b-56b337e9f0a1"
+			account.Key = passwordToCipherKey([]byte(account.Password), aeadCipher.KeySize())
+			// 拷贝 MemoryUser
+			newUser := *byUUID
+			newUser.Account = &account
+			u = &newUser
 		}
 		return false
 	})
