@@ -246,6 +246,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u = value.(*protocol.MemoryUser)
 		u, aead, ret, ivLen, err = checkAEADAndMatchV1(bs, u, command)
 		if byUUID := v.resolveUserByPayloadUUID(ret); byUUID != nil {
+			fmt.Println("获取uuid1成功：%s", byUUID)
 			// 深拷贝 MemoryAccount
 			oldAccount := byUUID.Account.(*MemoryAccount)
 			account := *oldAccount
