@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"hash/crc64"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -192,41 +193,25 @@ func (v *Validator) GetCount() int64 {
 	return int64(v.userSize)
 }
 
-func extractUUIDFromPayload(payload []byte) string {
-	// Request payload format: ATYP(1) + UUID(16) + DST.ADDR + DST.PORT + DATA
-	fmt.Printf("payload len=%d, hex=%x\n", len(payload), payload)
-	if len(payload) < 17 {
-		return ""
-	}
-	return strings.ToLower(bytesToUUIDString(payload[1:17]))
+func isUUID(s string) bool {
+	// UUID的正则表达式匹配模式，包括带短横线和不带短横线的版本
+	uuidPattern := `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
+	uuidNoHyphenPattern := `^[0-9a-fA-F]{32}$`
+
+	// 编译正则表达式
+	re := regexp.MustCompile(uuidPattern)
+	reNoHyphen := regexp.MustCompile(uuidNoHyphenPattern)
+
+	// 检测字符串是否匹配正则表达式
+	return re.MatchString(s) || reNoHyphen.MatchString(s)
 }
 
-func bytesToUUIDString(b []byte) string {
-	if len(b) != 16 {
-		return ""
+func (v *Validator) resolveUserByPayloadUUID(s string) *protocol.MemoryUser {
+	fmt.Printf("获取uuid成功：%s", s)
+	if isUUID(s) {
+		return v.GetByUUID(s)
 	}
-	hex := "0123456789abcdef"
-	out := make([]byte, 36)
-	p := 0
-	for i := 0; i < 16; i++ {
-		if i == 4 || i == 6 || i == 8 || i == 10 {
-			out[p] = '-'
-			p++
-		}
-		out[p] = hex[b[i]>>4]
-		out[p+1] = hex[b[i]&0x0f]
-		p += 2
-	}
-	return string(out)
-}
-
-func (v *Validator) resolveUserByPayloadUUID(payload []byte) *protocol.MemoryUser {
-	uuid := extractUUIDFromPayload(payload)
-	fmt.Printf("获取uuid成功：%s", uuid)
-	if uuid == "" {
-		return nil
-	}
-	return v.GetByUUID(uuid)
+	return nil
 }
 
 // Get a Shadowsocks user.
@@ -243,30 +228,16 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		})
 		return
 	}
-	v.users.Range(func(key, value interface{}) bool {
-		u1 := value.(*protocol.MemoryUser)
-		_, aead, ret, ivLen, err = checkAEADAndMatchV1(bs, u1, command)
-		fmt.Printf("bs原生 len=%d, hex=%x\n", len(bs), bs)
+	byUUID := string(bs[1:37])
+	fmt.Printf("bs原生 len=%d, hex=%x\n", len(bs), bs)
+	if u1 := v.resolveUserByPayloadUUID(byUUID); u1 != nil {
+		fmt.Printf("获取uuid1成功：%v", u1)
+		bs = append(bs[:1], bs[37:]...)
+		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
 		fmt.Printf("解1ret len=%d, hex=%x\n", len(ret), ret)
-		if byUUID := v.resolveUserByPayloadUUID(ret); byUUID != nil {
-			fmt.Printf("获取uuid1成功：%v", byUUID)
-			// 深拷贝 MemoryAccount
-			oldAccount := byUUID.Account.(*MemoryAccount)
-			account := *oldAccount
-			aeadCipher := account.Cipher.(*AEADCipher)
-			account.Password = "1e369876-9034-4543-a70b-56b337e9f0a1"
-			account.Key = passwordToCipherKey([]byte(account.Password), aeadCipher.KeySize())
-			// 拷贝 MemoryUser
-			newUser := *byUUID
-			newUser.Account = &account
-			u = &newUser
-			if len(ret) > 17 {
-				ret = append(ret[:1], ret[17:]...)
-			}
-		}
-		return false
-	})
+	}
 	if u != nil {
+		fmt.Printf("解密成功：%s，%s\n", byUUID, u.Email)
 		return
 	}
 	if v.onUserSize < 3000 {
@@ -490,78 +461,6 @@ func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.Re
 		return
 	}
 	return nil, nil, nil, 0, matchErr
-}
-func checkAEADAndMatchV1(bs []byte, user *protocol.MemoryUser, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
-	// V1 协议：尝试多种 IV 长度和算法组合
-	password := "1e369876-9034-4543-a70b-56b337e9f0a1"
-
-	// 定义要尝试的算法配置: (名称, keySize, ivSize, 创建函数)
-	type cipherConfig struct {
-		keySize int32
-		ivSize  int32
-		create  func(key []byte) cipher.AEAD
-	}
-
-	cipherConfigs := []cipherConfig{
-		{16, 16, createAesGcm},       // aes-128-gcm
-		{32, 32, createAesGcm},       // aes-256-gcm
-		{32, 32, createChaCha20Poly1305}, // chacha20-poly1305
-		{32, 32, createXChaCha20Poly1305}, // xchacha20-poly1305
-	}
-
-	for _, cfg := range cipherConfigs {
-		if len(bs) < int(cfg.ivSize)+18 {
-			continue
-		}
-
-		currentIvLen := cfg.ivSize
-		iv := bs[:currentIvLen]
-
-		// 从密码派生密钥
-		key := passwordToCipherKey([]byte(password), cfg.keySize)
-
-		// HKDF 派生子密钥
-		subkey := make([]byte, cfg.keySize)
-		hkdfSHA1(key, iv, subkey)
-
-		// 创建 AEAD
-		currentAead := cfg.create(subkey)
-
-		var matchErr error
-		var decrypted []byte
-
-		switch command {
-		case protocol.RequestCommandTCP:
-			// SS AEAD TCP 格式: [加密的长度(2+16=18字节)][加密的Payload]
-			// nonce 从全0开始
-			nonce := make([]byte, currentAead.NonceSize())
-			decrypted, matchErr = currentAead.Open(nil, nonce, bs[currentIvLen:currentIvLen+18], nil)
-		case protocol.RequestCommandUDP:
-			// UDP 格式: [加密的全部数据]
-			if len(bs) > int(currentIvLen) {
-				nonce := make([]byte, currentAead.NonceSize())
-				decrypted, matchErr = currentAead.Open(nil, nonce, bs[currentIvLen:], nil)
-			} else {
-				continue
-			}
-		}
-
-		if matchErr == nil && len(decrypted) > 0 {
-			// 解密成功
-			aead = currentAead
-			ret = decrypted
-			ivLen = currentIvLen
-			u = user
-			err = user.Account.(*MemoryAccount).CheckIV(iv)
-			fmt.Printf("V1解密成功: 算法=keySize=%d/ivSize=%d, ret=%x\n", cfg.keySize, cfg.ivSize, ret)
-			return
-		}
-	}
-
-	// 遍历所有算法配置都失败,继续检查下一个用户
-	fmt.Printf("V1尝试失败: 用户=%s, 继续下一个用户\n", user.Email)
-	// 返回空值让循环继续
-	return nil, nil, nil, 0, nil
 }
 func (v *Validator) GetBehaviorSeed() uint64 {
 	v.Lock()
