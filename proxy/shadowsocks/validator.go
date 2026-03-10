@@ -418,13 +418,13 @@ func userProcessBatch(ctx context.Context, batch []*protocol.MemoryUser, bs []by
 }
 
 func (v *Validator) touchUser(email string) {
-	if _, ok := v.onUsers.Load(email); ok {
+	if _, ok := v.onUsers.Load(email); !ok {
 		v.onUserSize++
 	}
-	if _, ok := v.onHourUsers.Load(email); ok {
+	if _, ok := v.onHourUsers.Load(email); !ok {
 		v.onHourUserSize++
 	}
-	if _, ok := v.onDayUsers.Load(email); ok {
+	if _, ok := v.onDayUsers.Load(email); !ok {
 		v.onDayUserSize++
 	}
 	now := time.Now()
