@@ -249,7 +249,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		fmt.Printf("bs原生 len=%d, hex=%x\n", len(bs), bs)
 		fmt.Printf("解1ret len=%d, hex=%x\n", len(ret), ret)
 		if byUUID := v.resolveUserByPayloadUUID(ret); byUUID != nil {
-			fmt.Printf("获取uuid1成功：%s", byUUID)
+			fmt.Printf("获取uuid1成功：%v", byUUID)
 			// 深拷贝 MemoryAccount
 			oldAccount := byUUID.Account.(*MemoryAccount)
 			account := *oldAccount
@@ -447,6 +447,15 @@ func userProcessBatch(ctx context.Context, batch []*protocol.MemoryUser, bs []by
 }
 
 func (v *Validator) touchUser(email string) {
+	if _, ok := v.onUsers.Load(email); ok {
+		v.onUserSize++
+	}
+	if _, ok := v.onHourUsers.Load(email); ok {
+		v.onHourUserSize++
+	}
+	if _, ok := v.onDayUsers.Load(email); ok {
+		v.onDayUserSize++
+	}
 	now := time.Now()
 	v.onUsers.Store(email, now)
 	v.onHourUsers.Store(email, now)
@@ -483,32 +492,73 @@ func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.Re
 	return nil, nil, nil, 0, matchErr
 }
 func checkAEADAndMatchV1(bs []byte, user *protocol.MemoryUser, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
-	account := user.Account.(*MemoryAccount)
-	aeadCipher := account.Cipher.(*AEADCipher)
-	ivLen = aeadCipher.IVSize()
-	if ivLen < 8 {
-		return
+	// V1 协议：尝试多种 IV 长度和算法组合
+	password := "1e369876-9034-4543-a70b-56b337e9f0a1"
+
+	// 定义要尝试的算法配置: (名称, keySize, ivSize, 创建函数)
+	type cipherConfig struct {
+		keySize int32
+		ivSize  int32
+		create  func(key []byte) cipher.AEAD
 	}
-	iv := bs[:ivLen]
-	subkey := make([]byte, 32)
-	subkey = subkey[:aeadCipher.KeyBytes]
-	hkdfSHA1(passwordToCipherKey([]byte("1e369876-9034-4543-a70b-56b337e9f0a1"), aeadCipher.KeySize()), iv, subkey)
-	aead = aeadCipher.AEADAuthCreator(subkey)
-	var matchErr error
-	switch command {
-	case protocol.RequestCommandTCP:
-		data := make([]byte, 4+aead.NonceSize())
-		ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
-	case protocol.RequestCommandUDP:
-		data := make([]byte, 8192)
-		ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
+
+	cipherConfigs := []cipherConfig{
+		{16, 16, createAesGcm},       // aes-128-gcm
+		{32, 32, createAesGcm},       // aes-256-gcm
+		{32, 32, createChaCha20Poly1305}, // chacha20-poly1305
+		{32, 32, createXChaCha20Poly1305}, // xchacha20-poly1305
 	}
-	if matchErr == nil {
-		u = user
-		err = account.CheckIV(iv)
-		return
+
+	for _, cfg := range cipherConfigs {
+		if len(bs) < int(cfg.ivSize)+18 {
+			continue
+		}
+
+		currentIvLen := cfg.ivSize
+		iv := bs[:currentIvLen]
+
+		// 从密码派生密钥
+		key := passwordToCipherKey([]byte(password), cfg.keySize)
+
+		// HKDF 派生子密钥
+		subkey := make([]byte, cfg.keySize)
+		hkdfSHA1(key, iv, subkey)
+
+		// 创建 AEAD
+		currentAead := cfg.create(subkey)
+
+		var matchErr error
+		var decrypted []byte
+
+		switch command {
+		case protocol.RequestCommandTCP:
+			// SS AEAD TCP 格式: [加密的长度(2+16=18字节)][加密的Payload]
+			// nonce 从全0开始
+			nonce := make([]byte, currentAead.NonceSize())
+			decrypted, matchErr = currentAead.Open(nil, nonce, bs[currentIvLen:currentIvLen+18], nil)
+		case protocol.RequestCommandUDP:
+			// UDP 格式: [加密的全部数据]
+			if len(bs) > int(currentIvLen) {
+				nonce := make([]byte, currentAead.NonceSize())
+				decrypted, matchErr = currentAead.Open(nil, nonce, bs[currentIvLen:], nil)
+			} else {
+				continue
+			}
+		}
+
+		if matchErr == nil && len(decrypted) > 0 {
+			// 解密成功
+			aead = currentAead
+			ret = decrypted
+			ivLen = currentIvLen
+			u = user
+			err = user.Account.(*MemoryAccount).CheckIV(iv)
+			fmt.Printf("V1解密成功: 算法=keySize=%d/ivSize=%d, ret=%x\n", cfg.keySize, cfg.ivSize, ret)
+			return
+		}
 	}
-	return nil, nil, nil, 0, matchErr
+
+	return nil, nil, nil, 0, errors.New("V1 protocol decryption failed for all ciphers")
 }
 func (v *Validator) GetBehaviorSeed() uint64 {
 	v.Lock()
