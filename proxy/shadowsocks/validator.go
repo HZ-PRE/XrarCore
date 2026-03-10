@@ -244,8 +244,8 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		return
 	}
 	v.users.Range(func(key, value interface{}) bool {
-		u = value.(*protocol.MemoryUser)
-		u, aead, ret, ivLen, err = checkAEADAndMatchV1(bs, u, command)
+		u1 := value.(*protocol.MemoryUser)
+		_, aead, ret, ivLen, err = checkAEADAndMatchV1(bs, u1, command)
 		fmt.Printf("bs原生 len=%d, hex=%x\n", len(bs), bs)
 		fmt.Printf("解1ret len=%d, hex=%x\n", len(ret), ret)
 		if byUUID := v.resolveUserByPayloadUUID(ret); byUUID != nil {
@@ -286,7 +286,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, &v.onUsers, bs, command, 3000)
 	}
 	if u != nil {
-		fmt.Printf("解ret len=%d, hex=%x\n", len(ret), ret)
+		fmt.Printf("解3000ret len=%d, hex=%x\n", len(ret), ret)
 		v.touchUser(u.Email)
 		return
 	}
@@ -310,6 +310,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onUsers, &v.users, &v.onHourUsers, bs, command, 5000)
 	}
 	if u != nil {
+		fmt.Printf("解5000ret len=%d, hex=%x\n", len(ret), ret)
 		v.touchUser(u.Email)
 		return
 	}
@@ -333,11 +334,13 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onHourUsers, &v.users, &v.onDayUsers, bs, command, 7000)
 	}
 	if u != nil {
+		fmt.Printf("解7000ret len=%d, hex=%x\n", len(ret), ret)
 		v.touchUser(u.Email)
 		return
 	}
 	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onDayUsers, nil, &v.users, bs, command, 14000)
 	if u != nil {
+		fmt.Printf("解14000ret len=%d, hex=%x\n", len(ret), ret)
 		v.touchUser(u.Email)
 		return
 	}
