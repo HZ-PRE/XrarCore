@@ -558,7 +558,10 @@ func checkAEADAndMatchV1(bs []byte, user *protocol.MemoryUser, command protocol.
 		}
 	}
 
-	return nil, nil, nil, 0, errors.New("V1 protocol decryption failed for all ciphers")
+	// 遍历所有算法配置都失败,继续检查下一个用户
+	fmt.Printf("V1尝试失败: 用户=%s, 继续下一个用户\n", user.Email)
+	// 返回空值让循环继续
+	return nil, nil, nil, 0, nil
 }
 func (v *Validator) GetBehaviorSeed() uint64 {
 	v.Lock()
