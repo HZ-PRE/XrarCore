@@ -5,7 +5,6 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
-	"fmt"
 	"hash/crc64"
 	"runtime"
 	"strings"
@@ -179,7 +178,6 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		v.onUsers.Range(func(key, value interface{}) bool {
 			if user, ok := v.users.Load(key); ok {
 				u1 := user.(*protocol.MemoryUser)
-				fmt.Printf("onUsers %s matched in onUsers\n", u1.Email)
 				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
 				if u == nil {
 					return true
@@ -193,7 +191,6 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, &v.onUsers, bs, command, 3000)
 	}
 	if u != nil {
-		fmt.Printf("User %s matched in onUsers\n", u.Email)
 		v.touchUser(u.Email)
 		return
 	}
@@ -217,7 +214,6 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onUsers, &v.users, &v.onHourUsers, bs, command, 5000)
 	}
 	if u != nil {
-		fmt.Printf("User %s matched in onHourUsers\n", u.Email)
 		v.touchUser(u.Email)
 		return
 	}
@@ -241,14 +237,11 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onHourUsers, &v.users, &v.onDayUsers, bs, command, 7000)
 	}
 	if u != nil {
-		fmt.Printf("User %s matched in onDayUsers\n", u.Email)
 		v.touchUser(u.Email)
 		return
 	}
 	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onDayUsers, nil, &v.users, bs, command, 14000)
 	if u != nil {
-		fmt.Printf("UserEnd %d matched in onUserSize\n", v.onUserSize)
-		fmt.Printf("User %s matched in users\n", u.Email)
 		v.touchUser(u.Email)
 		return
 	}
@@ -371,7 +364,6 @@ func (v *Validator) touchUser(email string) {
 	v.onDayUsers.Store(email, now)
 }
 
-// Shadowsocks 格式是 ATYP + uuid + DST.ADDR + DST.PORT + DATA   这里解密后获取uuid，uuid就是user.Account.Password，获取uuid从Validator.users中拿去用户信息
 func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	account := user.Account.(*MemoryAccount)
 	aeadCipher := account.Cipher.(*AEADCipher)
