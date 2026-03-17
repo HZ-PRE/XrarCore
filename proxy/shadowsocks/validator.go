@@ -176,9 +176,11 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		return
 	}
 	if v.onUserSize < 3000 {
+		fmt.Printf("User %d matched in onUserSize\n", v.onUserSize)
 		v.onUsers.Range(func(key, value interface{}) bool {
 			if user, ok := v.users.Load(key); ok {
 				u1 := user.(*protocol.MemoryUser)
+				fmt.Printf("onUsers %s matched in onUsers\n", u1.Email)
 				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
 				if u == nil {
 					return true
@@ -246,6 +248,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 	}
 	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onDayUsers, nil, &v.users, bs, command, 14000)
 	if u != nil {
+		fmt.Printf("UserEnd %d matched in onUserSize\n", v.onUserSize)
 		fmt.Printf("User %s matched in users\n", u.Email)
 		v.touchUser(u.Email)
 		return
