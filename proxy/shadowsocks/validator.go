@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
+	"fmt"
 	"hash/crc64"
 	"runtime"
 	"strings"
@@ -89,30 +90,26 @@ func (v *Validator) DetOnUsers() {
 	v.Lock()
 	defer v.Unlock()
 	newDate := time.Now()
-	onUserSize := 0
-	onHourUserSize := 0
-	onDayUserSize := 0
 	v.onDayUsers.Range(func(key, value interface{}) bool {
 		m := value.(time.Time)
 		duration := newDate.Sub(m)
 		if duration > 24*time.Hour {
 			v.onDayUsers.Delete(key)
+			v.onUserSize-- // 24小时未在线，用户不活跃，删除在线记录
 		} else {
-			onDayUserSize += 1
 			if v1, ok := v.onHourUsers.Load(key); ok {
 				m1 := v1.(time.Time)
 				duration = newDate.Sub(m1)
 				if duration > 6*time.Hour {
 					v.onHourUsers.Delete(key)
+					v.onHourUserSize-- // 6小时未在线，用户不活跃，删除在线记录
 				} else {
-					onHourUserSize += 1
 					if v2, ok2 := v.onUsers.Load(key); ok2 {
 						m2 := v2.(time.Time)
 						duration = newDate.Sub(m2)
 						if duration > 11*time.Minute {
 							v.onUsers.Delete(key)
-						} else {
-							onUserSize += 1
+							v.onUserSize-- // 11分钟未在线，用户不活跃，删除在线记录
 						}
 					}
 				}
@@ -120,9 +117,6 @@ func (v *Validator) DetOnUsers() {
 		}
 		return true
 	})
-	v.onUserSize = onUserSize
-	v.onHourUserSize = onHourUserSize
-	v.onDayUserSize = onDayUserSize
 }
 
 // GetByEmail Get a Shadowsocks user with a non-empty Email.
@@ -191,6 +185,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, &v.onUsers, bs, command, 3000)
 	}
 	if u != nil {
+		fmt.Printf("User %s matched in onUsers\n", u.Email)
 		v.touchUser(u.Email)
 		return
 	}
@@ -214,6 +209,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onUsers, &v.users, &v.onHourUsers, bs, command, 5000)
 	}
 	if u != nil {
+		fmt.Printf("User %s matched in onHourUsers\n", u.Email)
 		v.touchUser(u.Email)
 		return
 	}
@@ -237,11 +233,13 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onHourUsers, &v.users, &v.onDayUsers, bs, command, 7000)
 	}
 	if u != nil {
+		fmt.Printf("User %s matched in onDayUsers\n", u.Email)
 		v.touchUser(u.Email)
 		return
 	}
 	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onDayUsers, nil, &v.users, bs, command, 14000)
 	if u != nil {
+		fmt.Printf("User %s matched in users\n", u.Email)
 		v.touchUser(u.Email)
 		return
 	}
@@ -348,6 +346,15 @@ func userProcessBatch(ctx context.Context, batch []*protocol.MemoryUser, bs []by
 }
 
 func (v *Validator) touchUser(email string) {
+	if _, ok := v.onUsers.Load(email); !ok {
+		v.onUserSize++
+	}
+	if _, ok := v.onHourUsers.Load(email); !ok {
+		v.onHourUserSize++
+	}
+	if _, ok := v.onDayUsers.Load(email); !ok {
+		v.onDayUserSize++
+	}
 	now := time.Now()
 	v.onUsers.Store(email, now)
 	v.onHourUsers.Store(email, now)
