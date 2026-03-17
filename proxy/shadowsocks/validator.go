@@ -178,6 +178,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 	if v.onUserSize < 3000 {
 		fmt.Printf("User %d matched in onUserSize\n", v.onUserSize)
 		v.onUsers.Range(func(key, value interface{}) bool {
+			fmt.Printf("sadfs %s matched in onUsers\n", key)
 			if user, ok := v.users.Load(key); ok {
 				u1 := user.(*protocol.MemoryUser)
 				fmt.Printf("onUsers %s matched in onUsers\n", u1.Email)
