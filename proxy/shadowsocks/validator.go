@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"hash/crc64"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 type Validator struct {
 	sync.RWMutex
 	users          sync.Map
+	usersByUUID    sync.Map
 	userSize       int
 	legacyUsers    sync.Map
 	onUsers        sync.Map
@@ -49,12 +51,19 @@ func (v *Validator) Add(u *protocol.MemoryUser) error {
 
 	account := u.Account.(*MemoryAccount)
 	email := strings.ToLower(u.Email)
+	uuid := strings.ToLower(account.Password)
 	v.userSize = v.userSize + 1
 	if !account.Cipher.IsAEAD() {
 		v.legacyUsers.Store(email, u)
+		if uuid != "" {
+			v.usersByUUID.Store(uuid, u)
+		}
 		return nil
 	}
 	v.users.Store(email, u)
+	if uuid != "" {
+		v.usersByUUID.Store(uuid, u)
+	}
 	if !v.behaviorFused {
 		hashkdf := hmac.New(sha256.New, []byte("SSBSKDF"))
 		hashkdf.Write(account.Key)
@@ -73,8 +82,19 @@ func (v *Validator) Del(email string) error {
 	defer v.Unlock()
 
 	email = strings.ToLower(email)
-	if _, ok := v.users.Load(email); !ok {
+	var user *protocol.MemoryUser
+	if value, ok := v.users.Load(email); ok {
+		user = value.(*protocol.MemoryUser)
+	}
+	if value, ok := v.legacyUsers.Load(email); ok && user == nil {
+		user = value.(*protocol.MemoryUser)
+	}
+	if user == nil {
 		return nil
+	}
+	account := user.Account.(*MemoryAccount)
+	if account.Password != "" {
+		v.usersByUUID.Delete(strings.ToLower(account.Password))
 	}
 	v.onUsers.Delete(email)
 	v.onHourUsers.Delete(email)
@@ -134,6 +154,18 @@ func (v *Validator) GetByEmail(email string) *protocol.MemoryUser {
 	return nil
 }
 
+// GetByUUID gets a Shadowsocks user by uuid (uuid is stored in user.Account.Password).
+func (v *Validator) GetByUUID(uuid string) *protocol.MemoryUser {
+	if uuid == "" {
+		return nil
+	}
+	uuid = strings.ToLower(uuid)
+	if value, ok := v.usersByUUID.Load(uuid); ok {
+		return value.(*protocol.MemoryUser)
+	}
+	return nil
+}
+
 // GetAll get all users
 func (v *Validator) GetAll() []*protocol.MemoryUser {
 	var u = make([]*protocol.MemoryUser, 0, 2000)
@@ -154,6 +186,27 @@ func (v *Validator) GetCount() int64 {
 	return int64(v.userSize)
 }
 
+func isUUID(s string) bool {
+	// UUID的正则表达式匹配模式，包括带短横线和不带短横线的版本
+	uuidPattern := `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
+	uuidNoHyphenPattern := `^[0-9a-fA-F]{32}$`
+
+	// 编译正则表达式
+	re := regexp.MustCompile(uuidPattern)
+	reNoHyphen := regexp.MustCompile(uuidNoHyphenPattern)
+
+	// 检测字符串是否匹配正则表达式
+	return re.MatchString(s) || reNoHyphen.MatchString(s)
+}
+
+func (v *Validator) resolveUserByPayloadUUID(s string) *protocol.MemoryUser {
+	fmt.Printf("获取uuid成功：%s", s)
+	if isUUID(s) {
+		return v.GetByUUID(s)
+	}
+	return nil
+}
+
 // Get a Shadowsocks user.
 func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	v.RLock()
@@ -166,6 +219,18 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 			// err = user.Account.(*MemoryAccount).CheckIV(bs[:ivLen]) // The IV size of None Cipher is 0.
 			return false
 		})
+		return
+	}
+	byUUID := string(bs[1:37])
+	fmt.Printf("bs原生 len=%d, hex=%x\n", len(bs), bs)
+	if u1 := v.resolveUserByPayloadUUID(byUUID); u1 != nil {
+		fmt.Printf("获取uuid1成功：%v", u1)
+		bs = append(bs[:1], bs[37:]...)
+		u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+		fmt.Printf("解1ret len=%d, hex=%x\n", len(ret), ret)
+	}
+	if u != nil {
+		fmt.Printf("解密成功：%s，%s\n", byUUID, u.Email)
 		return
 	}
 	if v.onUserSize < 3000 {
@@ -361,6 +426,7 @@ func (v *Validator) touchUser(email string) {
 	v.onDayUsers.Store(email, now)
 }
 
+// Shadowsocks 格式是 ATYP + uuid + DST.ADDR + DST.PORT + DATA   这里解密后获取uuid，uuid就是user.Account.Password，获取uuid从Validator.users中拿去用户信息
 func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	account := user.Account.(*MemoryAccount)
 	aeadCipher := account.Cipher.(*AEADCipher)
@@ -389,7 +455,6 @@ func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.Re
 	}
 	return nil, nil, nil, 0, matchErr
 }
-
 func (v *Validator) GetBehaviorSeed() uint64 {
 	v.Lock()
 	defer v.Unlock()
