@@ -116,8 +116,9 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	pwd := GetPasswordFromConn(conn)
 	if pwd != "" {
 		// 在这里可以把 password 上报到后端或作其它处理（注意安全）
-		fmt.Println("pre-decrypt password哇哈哈:", pwd)
+		fmt.Printf("pre-decrypt password哇哈哈: %s\n", pwd)
 	}
+	fmt.Printf("conn type: %T\n", conn)
 	switch network {
 	case net.Network_TCP:
 		return s.handleConnection(ctx, conn, dispatcher)
