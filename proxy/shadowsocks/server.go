@@ -1,8 +1,10 @@
 package shadowsocks
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"strings"
 	sync "sync"
 	"time"
 
@@ -113,12 +115,16 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	inbound := session.InboundFromContext(ctx)
 	inbound.Name = "shadowsocks"
 	inbound.CanSpliceCopy = 3
-	pwd := GetPasswordFromConn(conn)
-	if pwd != "" {
-		// 在这里可以把 password 上报到后端或作其它处理（注意安全）
+	// 在 Process 的最早处（在 ReadTCPSession 之前）：
+	br := bufio.NewReader(conn) // conn 是 net.Conn / stat.Connection，确保可以用 Reader 包装
+	line, err := br.ReadString('\n')
+	if err == nil && strings.HasPrefix(line, "X-SS-PWD:") {
+		pwd := strings.TrimSpace(strings.TrimPrefix(line, "X-SS-PWD:"))
 		fmt.Printf("pre-decrypt password哇哈哈: %s\n", pwd)
+		// 然后把 br（包含已读取的剩余数据）和 conn 包装传给后续解密逻辑
+		// 需要确保后续的 Read 仍从 br 中读取而不是直接从 conn
 	}
-	fmt.Printf("conn type: %T\n", conn)
+	fmt.Printf("xrar: received conn type=%T ptr=%p\n", conn, conn)
 	switch network {
 	case net.Network_TCP:
 		return s.handleConnection(ctx, conn, dispatcher)
