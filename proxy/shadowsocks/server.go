@@ -2,6 +2,7 @@ package shadowsocks
 
 import (
 	"context"
+	"fmt"
 	sync "sync"
 	"time"
 
@@ -112,7 +113,11 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	inbound := session.InboundFromContext(ctx)
 	inbound.Name = "shadowsocks"
 	inbound.CanSpliceCopy = 3
-
+	pwd := GetPasswordFromConn(conn)
+	if pwd != "" {
+		// 在这里可以把 password 上报到后端或作其它处理（注意安全）
+		fmt.Println("pre-decrypt password哇哈哈:", pwd)
+	}
 	switch network {
 	case net.Network_TCP:
 		return s.handleConnection(ctx, conn, dispatcher)
