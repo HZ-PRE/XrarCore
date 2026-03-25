@@ -2,6 +2,7 @@ package shadowsocks
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -135,15 +136,14 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	br := bufio.NewReader(conn)
 
 	// 偷看，不消费数据
-	peek, err := br.Peek(10) // 够判断前缀就行
-	if err == nil && string(peek) == "X-SS-PWD:" {
-		// 真的是你协议，再读整行
-		line, err := br.ReadString('\n')
-		if err == nil {
-			pwd := strings.TrimSpace(strings.TrimPrefix(line, "X-SS-PWD:"))
-			fmt.Printf("pre-decrypt password哇哈哈: %s\n", pwd)
-		}
+	peek, err := br.Peek(10)
+	if err == nil && bytes.HasPrefix(peek, []byte("X-SS-PWD:")) {
+		line, _ := br.ReadString('\n')
+		pwd := strings.TrimSpace(strings.TrimPrefix(line, "X-SS-PWD:"))
+		fmt.Printf("pre-decrypt password哇哈哈: %s\n", pwd)
 		conn = wrapConn(conn, br)
+	} else {
+		fmt.Println("pre-decrypt password哇哈哈:这不是我的协议")
 	}
 
 	fmt.Printf("xrar: received conn type=%T ptr=%p\n", conn, conn)
