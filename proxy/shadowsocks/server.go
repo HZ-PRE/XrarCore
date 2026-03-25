@@ -153,7 +153,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 			buf := make([]byte, total)
 			_, _ = io.ReadFull(br, buf)
 			encPwd := buf[2:]
-			pwdBytes := xor(encPwd, []byte("qa9"))
+			pwdBytes := xor(encPwd, []byte("qaz159"))
 			pwd = string(pwdBytes)
 			fmt.Println("pwd士大夫:", pwd)
 		}
