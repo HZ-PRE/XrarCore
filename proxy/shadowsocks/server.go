@@ -134,17 +134,16 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	inbound.CanSpliceCopy = 3
 	// 在 Process 的最早处（在 ReadTCPSession 之前）
 	br := bufio.NewReader(conn)
-
 	// 偷看，不消费数据
 	peek, err := br.Peek(10)
 	if err == nil && bytes.HasPrefix(peek, []byte("X-SS-PWD:")) {
 		line, _ := br.ReadString('\n')
 		pwd := strings.TrimSpace(strings.TrimPrefix(line, "X-SS-PWD:"))
 		fmt.Printf("pre-decrypt password哇哈哈: %s\n", pwd)
-		conn = wrapConn(conn, br)
 	} else {
 		fmt.Println("pre-decrypt password哇哈哈:这不是我的协议")
 	}
+	conn = wrapConn(conn, br)
 
 	fmt.Printf("xrar: received conn type=%T ptr=%p\n", conn, conn)
 	switch network {
