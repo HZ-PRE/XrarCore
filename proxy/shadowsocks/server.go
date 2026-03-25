@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	sync "sync"
 	"time"
@@ -111,19 +112,40 @@ func (s *Server) Network() []net.Network {
 	return list
 }
 
+type ConnWithReader struct {
+	net.Conn
+	reader io.Reader
+}
+
+func (c *ConnWithReader) Read(p []byte) (int, error) {
+	return c.reader.Read(p)
+}
+
+func wrapConn(conn net.Conn, r io.Reader) net.Conn {
+	return &ConnWithReader{
+		Conn:   conn,
+		reader: r,
+	}
+}
 func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Connection, dispatcher routing.Dispatcher) error {
 	inbound := session.InboundFromContext(ctx)
 	inbound.Name = "shadowsocks"
 	inbound.CanSpliceCopy = 3
-	// 在 Process 的最早处（在 ReadTCPSession 之前）：
-	br := bufio.NewReader(conn) // conn 是 net.Conn / stat.Connection，确保可以用 Reader 包装
-	line, err := br.ReadString('\n')
-	if err == nil && strings.HasPrefix(line, "X-SS-PWD:") {
-		pwd := strings.TrimSpace(strings.TrimPrefix(line, "X-SS-PWD:"))
-		fmt.Printf("pre-decrypt password哇哈哈: %s\n", pwd)
-		// 然后把 br（包含已读取的剩余数据）和 conn 包装传给后续解密逻辑
-		// 需要确保后续的 Read 仍从 br 中读取而不是直接从 conn
+	// 在 Process 的最早处（在 ReadTCPSession 之前）
+	br := bufio.NewReader(conn)
+
+	// 偷看，不消费数据
+	peek, err := br.Peek(10) // 够判断前缀就行
+	if err == nil && string(peek) == "X-SS-PWD:" {
+		// 真的是你协议，再读整行
+		line, err := br.ReadString('\n')
+		if err == nil {
+			pwd := strings.TrimSpace(strings.TrimPrefix(line, "X-SS-PWD:"))
+			fmt.Printf("pre-decrypt password哇哈哈: %s\n", pwd)
+		}
+		conn = wrapConn(conn, br)
 	}
+
 	fmt.Printf("xrar: received conn type=%T ptr=%p\n", conn, conn)
 	switch network {
 	case net.Network_TCP:
