@@ -3,7 +3,6 @@ package shadowsocks
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"io"
 	sync "sync"
 	"time"
@@ -155,7 +154,6 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 			encPwd := buf[2:]
 			pwdBytes := xor(encPwd, []byte("qaz159"))
 			pwd = string(pwdBytes)
-			fmt.Println("pwd士大夫:", pwd)
 		}
 	}
 
