@@ -2,10 +2,9 @@ package shadowsocks
 
 import (
 	"bufio"
-	"bytes"
 	"context"
+	"fmt"
 	"io"
-	"strings"
 	sync "sync"
 	"time"
 
@@ -127,24 +126,39 @@ func wrapConn(conn net.Conn, r io.Reader) net.Conn {
 		reader: r,
 	}
 }
+func xor(data, key []byte) []byte {
+	out := make([]byte, len(data))
+	for i := range data {
+		out[i] = data[i] ^ key[i%len(key)]
+	}
+	return out
+}
 func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Connection, dispatcher routing.Dispatcher) error {
 	inbound := session.InboundFromContext(ctx)
 	inbound.Name = "shadowsocks"
 	inbound.CanSpliceCopy = 3
 	// 在 Process 的最早处（在 ReadTCPSession 之前）
 	br := bufio.NewReader(conn)
-	conn = wrapConn(conn, br) // 提前统一接管
-
-	prefix := []byte("X-SS-PWD:")
-	peek, err := br.Peek(len(prefix))
-
-	pwd := ""
-	if err == nil && bytes.Equal(peek, prefix) {
-		line, err := br.ReadString('\n')
-		if err == nil {
-			pwd = strings.TrimSpace(strings.TrimPrefix(line, "X-SS-PWD:"))
+	conn = wrapConn(conn, br) // 必须统一走 br
+	var pwd string
+	// 先偷看2字节（标识 + 长度）
+	peek, err := br.Peek(2)
+	if err == nil && len(peek) == 2 && peek[0] == 0xAA {
+		length := int(peek[1])
+		// 再确保整个 header 都在 buffer 里
+		total := 2 + length
+		peekAll, err := br.Peek(total)
+		if err == nil && len(peekAll) == total {
+			// 真正确认是你的协议 → 才消费
+			buf := make([]byte, total)
+			_, _ = io.ReadFull(br, buf)
+			encPwd := buf[2:]
+			pwdBytes := xor(encPwd, []byte("qa9"))
+			pwd = string(pwdBytes)
+			fmt.Println("pwd士大夫:", pwd)
 		}
 	}
+
 	switch network {
 	case net.Network_TCP:
 		return s.handleConnection(ctx, conn, dispatcher, pwd)
