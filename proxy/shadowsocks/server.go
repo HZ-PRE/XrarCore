@@ -139,10 +139,11 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	prefix := []byte("X-SS-PWD:")
 	peek, err := br.Peek(len(prefix))
 
+	pwd := ""
 	if err == nil && bytes.Equal(peek, prefix) {
 		line, err := br.ReadString('\n')
 		if err == nil {
-			pwd := strings.TrimSpace(strings.TrimPrefix(line, "X-SS-PWD:"))
+			pwd = strings.TrimSpace(strings.TrimPrefix(line, "X-SS-PWD:"))
 			fmt.Printf("pre-decrypt password: %s\n", pwd)
 		}
 	} else {
@@ -152,15 +153,15 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	fmt.Printf("xrar: received conn type=%T ptr=%p\n", conn, conn)
 	switch network {
 	case net.Network_TCP:
-		return s.handleConnection(ctx, conn, dispatcher)
+		return s.handleConnection(ctx, conn, dispatcher, pwd)
 	case net.Network_UDP:
-		return s.handleUDPPayload(ctx, conn, dispatcher)
+		return s.handleUDPPayload(ctx, conn, dispatcher, pwd)
 	default:
 		return errors.New("unknown network: ", network)
 	}
 }
 
-func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
+func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher, pwd string) error {
 	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
 		request := protocol.RequestHeaderFromContext(ctx)
 		if request == nil {
@@ -190,30 +191,15 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 
 	inbound := session.InboundFromContext(ctx)
 	var dest *net.Destination
-	reader := buf.NewPacketReader(conn)
+	reader := &UDPReader{
+		Reader:    conn,
+		User:      inbound.User,
+		Validator: s.validator,
+	}
 	for {
-		mpayload, err := reader.ReadMultiBuffer()
+		mpayload, err := reader.ReadMultiBufferWithPassword(pwd)
 		if err != nil {
-			break
-		}
-
-		for _, payload := range mpayload {
-			var request *protocol.RequestHeader
-			var data *buf.Buffer
-			var err error
-
-			if inbound.User != nil {
-				validator := new(Validator)
-				validator.Add(inbound.User)
-				request, data, err = DecodeUDPPacket(validator, payload)
-			} else {
-				request, data, err = DecodeUDPPacket(s.validator, payload)
-				if err == nil {
-					inbound.User = request.User
-				}
-			}
-
-			if err != nil {
+			if _, ok := err.(*UDPDecodeError); ok {
 				if inbound.Source.IsValid() {
 					errors.LogInfoInner(ctx, err, "dropping invalid UDP packet from: ", inbound.Source)
 					log.Record(&log.AccessMessage{
@@ -223,10 +209,25 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 						Reason: err,
 					})
 				}
-				payload.Release()
 				continue
 			}
+			break
+		}
 
+		request := reader.LastRequest()
+		if request == nil {
+			buf.ReleaseMulti(mpayload)
+			continue
+		}
+
+		if inbound.User == nil {
+			inbound.User = request.User
+			// Pin the UDP session to the authenticated user for subsequent packets.
+			reader.User = inbound.User
+			reader.Validator = nil
+		}
+
+		for _, data := range mpayload {
 			destination := request.Destination()
 
 			currentPacketCtx := ctx
@@ -241,7 +242,9 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			}
 			errors.LogInfo(ctx, "tunnelling request to ", destination)
 
-			data.UDP = &destination
+			if data.UDP == nil {
+				data.UDP = &destination
+			}
 
 			if !s.cone || dest == nil {
 				dest = &destination
@@ -255,14 +258,14 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 	return nil
 }
 
-func (s *Server) handleConnection(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
+func (s *Server) handleConnection(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher, pwd string) error {
 	sessionPolicy := s.policyManager.ForLevel(0)
 	if err := conn.SetReadDeadline(time.Now().Add(sessionPolicy.Timeouts.Handshake)); err != nil {
 		return errors.New("unable to set read deadline").Base(err).AtWarning()
 	}
 
 	bufferedReader := buf.BufferedReader{Reader: buf.NewReader(conn)}
-	request, bodyReader, err := ReadTCPSession(s.validator, &bufferedReader)
+	request, bodyReader, err := ReadTCPSession(s.validator, &bufferedReader, pwd)
 	if err != nil {
 		log.Record(&log.AccessMessage{
 			From:   conn.RemoteAddr(),

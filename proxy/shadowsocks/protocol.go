@@ -54,7 +54,7 @@ func (r *FullReader) Read(p []byte) (n int, err error) {
 }
 
 // ReadTCPSession reads a Shadowsocks TCP session from the given reader, returns its header and remaining parts.
-func ReadTCPSession(validator *Validator, reader io.Reader) (*protocol.RequestHeader, buf.Reader, error) {
+func ReadTCPSession(validator *Validator, reader io.Reader, pwd string) (*protocol.RequestHeader, buf.Reader, error) {
 	behaviorSeed := validator.GetBehaviorSeed()
 	drainer, errDrain := drain.NewBehaviorSeedLimitedDrainer(int64(behaviorSeed), 16+38, 3266, 64)
 
@@ -72,7 +72,7 @@ func ReadTCPSession(validator *Validator, reader io.Reader) (*protocol.RequestHe
 	}
 
 	bs := buffer.Bytes()
-	user, aead, _, ivLen, err := validator.Get(bs, protocol.RequestCommandTCP)
+	user, aead, _, ivLen, err := validator.Get(bs, protocol.RequestCommandTCP, pwd)
 
 	switch err {
 	case ErrNotFound:
@@ -237,9 +237,9 @@ func EncodeUDPPacket(request *protocol.RequestHeader, payload []byte) (*buf.Buff
 	return buffer, nil
 }
 
-func DecodeUDPPacket(validator *Validator, payload *buf.Buffer) (*protocol.RequestHeader, *buf.Buffer, error) {
+func DecodeUDPPacket(validator *Validator, payload *buf.Buffer, pwd string) (*protocol.RequestHeader, *buf.Buffer, error) {
 	rawPayload := payload.Bytes()
-	user, _, d, _, err := validator.Get(rawPayload, protocol.RequestCommandUDP)
+	user, _, d, _, err := validator.Get(rawPayload, protocol.RequestCommandUDP, pwd)
 
 	if goerrors.Is(err, ErrIVNotUnique) {
 		return nil, nil, errors.New("failed iv check").Base(err)
@@ -290,28 +290,72 @@ func DecodeUDPPacket(validator *Validator, payload *buf.Buffer) (*protocol.Reque
 }
 
 type UDPReader struct {
-	Reader io.Reader
-	User   *protocol.MemoryUser
+	Reader    io.Reader
+	User      *protocol.MemoryUser
+	Validator *Validator
+	Password  string
+
+	request *protocol.RequestHeader
+}
+
+type UDPDecodeError struct {
+	Err error
+}
+
+func (e *UDPDecodeError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *UDPDecodeError) Unwrap() error {
+	return e.Err
 }
 
 func (v *UDPReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	return v.ReadMultiBufferWithPassword(v.Password)
+}
+
+func (v *UDPReader) ReadMultiBufferWithPassword(pwd string) (buf.MultiBuffer, error) {
 	buffer := buf.New()
 	_, err := buffer.ReadFrom(v.Reader)
 	if err != nil {
 		buffer.Release()
 		return nil, err
 	}
-	validator := new(Validator)
-	validator.Add(v.User)
 
-	u, payload, err := DecodeUDPPacket(validator, buffer)
+	v.request = nil
+	validator, err := v.getValidator()
 	if err != nil {
 		buffer.Release()
 		return nil, err
 	}
+
+	u, payload, err := DecodeUDPPacket(validator, buffer, pwd)
+	if err != nil {
+		buffer.Release()
+		return nil, &UDPDecodeError{Err: err}
+	}
+	v.request = u
 	dest := u.Destination()
 	payload.UDP = &dest
 	return buf.MultiBuffer{payload}, nil
+}
+
+func (v *UDPReader) LastRequest() *protocol.RequestHeader {
+	return v.request
+}
+
+func (v *UDPReader) getValidator() (*Validator, error) {
+	if v.User != nil {
+		validator := new(Validator)
+		if err := validator.Add(v.User); err != nil {
+			return nil, errors.New("failed to add shadowsocks user to UDP validator").Base(err)
+		}
+		return validator, nil
+	}
+	if v.Validator != nil {
+		return v.Validator, nil
+	}
+	return nil, errors.New("failed to decode UDP payload: no user or validator")
 }
 
 type UDPWriter struct {

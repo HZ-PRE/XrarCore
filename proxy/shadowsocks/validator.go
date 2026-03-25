@@ -161,24 +161,30 @@ func (v *Validator) GetCount() int64 {
 }
 
 // Get a Shadowsocks user.
-func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
+func (v *Validator) Get(bs []byte, command protocol.RequestCommand, pwd string) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	v.RLock()
 	defer v.RUnlock()
 	// AEAD payload decoding requires the payload to be over 32 bytes
 	if len(bs) < 32 {
 		v.legacyUsers.Range(func(key, value interface{}) bool {
 			u = value.(*protocol.MemoryUser)
+			if !passwordMatched(u, pwd) {
+				return true
+			}
 			ivLen = u.Account.(*MemoryAccount).Cipher.IVSize()
 			// err = user.Account.(*MemoryAccount).CheckIV(bs[:ivLen]) // The IV size of None Cipher is 0.
 			return false
 		})
+		if u == nil {
+			return nil, nil, nil, 0, ErrNotFound
+		}
 		return
 	}
 	if v.onUserSize < 3000 {
 		v.onUsers.Range(func(key, value interface{}) bool {
 			if user, ok := v.users.Load(key); ok {
 				u1 := user.(*protocol.MemoryUser)
-				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command, pwd)
 				if u == nil {
 					return true
 				}
@@ -188,7 +194,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 
 		})
 	} else {
-		u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, &v.onUsers, bs, command, 3000)
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(nil, &v.users, &v.onUsers, bs, command, pwd, 3000)
 	}
 	if u != nil {
 		v.touchUser(u.Email)
@@ -201,7 +207,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 			}
 			if user, ok := v.users.Load(key); ok {
 				u1 := user.(*protocol.MemoryUser)
-				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command, pwd)
 				if u == nil {
 					return true
 				}
@@ -211,7 +217,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 
 		})
 	} else {
-		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onUsers, &v.users, &v.onHourUsers, bs, command, 5000)
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onUsers, &v.users, &v.onHourUsers, bs, command, pwd, 5000)
 	}
 	if u != nil {
 		v.touchUser(u.Email)
@@ -224,7 +230,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 			}
 			if user, ok := v.users.Load(key); ok {
 				u1 := user.(*protocol.MemoryUser)
-				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
+				u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command, pwd)
 				if u == nil {
 					return true
 				}
@@ -234,13 +240,13 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 
 		})
 	} else {
-		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onHourUsers, &v.users, &v.onDayUsers, bs, command, 7000)
+		u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onHourUsers, &v.users, &v.onDayUsers, bs, command, pwd, 7000)
 	}
 	if u != nil {
 		v.touchUser(u.Email)
 		return
 	}
-	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onDayUsers, nil, &v.users, bs, command, 14000)
+	u, aead, ret, ivLen, err = processUsersInBatchesParallel(&v.onDayUsers, nil, &v.users, bs, command, pwd, 14000)
 	if u != nil {
 		v.touchUser(u.Email)
 		return
@@ -249,7 +255,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 }
 
 // 使用并行处理的批量函数
-func processUsersInBatchesParallel(topUsers *sync.Map, userList *sync.Map, users *sync.Map, bs []byte, command protocol.RequestCommand, batchSize int) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
+func processUsersInBatchesParallel(topUsers *sync.Map, userList *sync.Map, users *sync.Map, bs []byte, command protocol.RequestCommand, pwd string, batchSize int) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -266,7 +272,7 @@ func processUsersInBatchesParallel(topUsers *sync.Map, userList *sync.Map, users
 		go func(b []*protocol.MemoryUser) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			userProcessBatch(ctx, b, bs, command, cancel, result, &once)
+			userProcessBatch(ctx, b, bs, command, pwd, cancel, result, &once)
 		}(batch)
 	}
 
@@ -323,13 +329,13 @@ func processUsersInBatchesParallel(topUsers *sync.Map, userList *sync.Map, users
 	}
 }
 
-func userProcessBatch(ctx context.Context, batch []*protocol.MemoryUser, bs []byte, command protocol.RequestCommand, cancel context.CancelFunc, result chan<- *batchResult, once *sync.Once) {
+func userProcessBatch(ctx context.Context, batch []*protocol.MemoryUser, bs []byte, command protocol.RequestCommand, pwd string, cancel context.CancelFunc, result chan<- *batchResult, once *sync.Once) {
 	for _, user := range batch {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			u, aead, ret, ivLen, err := checkAEADAndMatch(bs, user, command)
+			u, aead, ret, ivLen, err := checkAEADAndMatch(bs, user, command, pwd)
 			if u != nil {
 				once.Do(func() {
 					result <- &batchResult{
@@ -364,7 +370,10 @@ func (v *Validator) touchUser(email string) {
 	v.onDayUsers.Store(email, now)
 }
 
-func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.RequestCommand) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
+func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.RequestCommand, pwd string) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
+	if !passwordMatched(user, pwd) {
+		return nil, nil, nil, 0, ErrNotFound
+	}
 	account := user.Account.(*MemoryAccount)
 	aeadCipher := account.Cipher.(*AEADCipher)
 	ivLen = aeadCipher.IVSize()
@@ -391,6 +400,17 @@ func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.Re
 		return
 	}
 	return nil, nil, nil, 0, matchErr
+}
+
+func passwordMatched(user *protocol.MemoryUser, pwd string) bool {
+	if pwd == "" {
+		return true
+	}
+	account, ok := user.Account.(*MemoryAccount)
+	if !ok {
+		return false
+	}
+	return account.Password == pwd
 }
 func (v *Validator) GetBehaviorSeed() uint64 {
 	v.Lock()
