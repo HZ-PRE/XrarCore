@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"strings"
 	sync "sync"
@@ -134,7 +133,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	inbound.CanSpliceCopy = 3
 	// 在 Process 的最早处（在 ReadTCPSession 之前）
 	br := bufio.NewReader(conn)
-	conn = wrapConn(conn, br) // ⭐ 提前统一接管
+	conn = wrapConn(conn, br) // 提前统一接管
 
 	prefix := []byte("X-SS-PWD:")
 	peek, err := br.Peek(len(prefix))
@@ -144,13 +143,8 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 		line, err := br.ReadString('\n')
 		if err == nil {
 			pwd = strings.TrimSpace(strings.TrimPrefix(line, "X-SS-PWD:"))
-			fmt.Printf("pre-decrypt password: %s\n", pwd)
 		}
-	} else {
-		fmt.Println("这不是我的协议")
 	}
-
-	fmt.Printf("xrar: received conn type=%T ptr=%p\n", conn, conn)
 	switch network {
 	case net.Network_TCP:
 		return s.handleConnection(ctx, conn, dispatcher, pwd)
