@@ -125,6 +125,11 @@ func wrapConn(conn net.Conn, r io.Reader) net.Conn {
 		reader: r,
 	}
 }
+
+const passwordPrefixMagic byte = 0xAA
+
+var passwordXORKey = []byte("qaz159")
+
 func xor(data, key []byte) []byte {
 	out := make([]byte, len(data))
 	for i := range data {
@@ -132,45 +137,61 @@ func xor(data, key []byte) []byte {
 	}
 	return out
 }
+
+func readPasswordPrefix(r *bufio.Reader) string {
+	peek, err := r.Peek(2)
+	if err != nil || len(peek) != 2 || peek[0] != passwordPrefixMagic {
+		return ""
+	}
+
+	total := 2 + int(peek[1])
+	peekAll, err := r.Peek(total)
+	if err != nil || len(peekAll) != total {
+		return ""
+	}
+
+	header := make([]byte, total)
+	if _, err := io.ReadFull(r, header); err != nil {
+		return ""
+	}
+	return string(xor(header[2:], passwordXORKey))
+}
+
+func readPasswordPrefixFromPacket(payload *buf.Buffer) (string, int32, bool) {
+	if payload.Len() < 2 || payload.Byte(0) != passwordPrefixMagic {
+		return "", 0, false
+	}
+
+	length := int32(payload.Byte(1))
+	total := int32(2) + length
+	if payload.Len() < total {
+		return "", 0, false
+	}
+
+	return string(xor(payload.BytesRange(2, total), passwordXORKey)), total, true
+}
+
 func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Connection, dispatcher routing.Dispatcher) error {
 	inbound := session.InboundFromContext(ctx)
 	inbound.Name = "shadowsocks"
 	inbound.CanSpliceCopy = 3
-	// 在 Process 的最早处（在 ReadTCPSession 之前）
-	br := bufio.NewReader(conn)
-	conn = wrapConn(conn, br) // 必须统一走 br
-	var pwd string
-	// 先偷看2字节（标识 + 长度）
-	peek, err := br.Peek(2)
-	if err == nil && len(peek) == 2 && peek[0] == 0xAA {
-		length := int(peek[1])
-		// 再确保整个 header 都在 buffer 里
-		total := 2 + length
-		peekAll, err := br.Peek(total)
-		if err == nil && len(peekAll) == total {
-			// 真正确认是你的协议 → 才消费
-			buf := make([]byte, total)
-			_, _ = io.ReadFull(br, buf)
-			encPwd := buf[2:]
-			pwdBytes := xor(encPwd, []byte("qaz159"))
-			pwd = string(pwdBytes)
-		}
+	if network == net.Network_UDP {
+		return s.handleUDPPayload(ctx, conn, dispatcher, "")
 	}
-
-	switch network {
-	case net.Network_TCP:
-		return s.handleConnection(ctx, conn, dispatcher, pwd)
-	case net.Network_UDP:
-		return s.handleUDPPayload(ctx, conn, dispatcher, pwd)
-	default:
+	if network != net.Network_TCP {
 		return errors.New("unknown network: ", network)
 	}
+
+	br := bufio.NewReader(conn)
+	conn = wrapConn(conn, br)
+	return s.handleConnection(ctx, conn, dispatcher, readPasswordPrefix(br))
 }
 
 func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher, pwd string) error {
 	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
 		request := protocol.RequestHeaderFromContext(ctx)
 		if request == nil {
+			packet.Payload.Release()
 			return
 		}
 
@@ -194,18 +215,44 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 
 		conn.Write(data.Bytes())
 	})
+	defer udpServer.RemoveRay()
 
 	inbound := session.InboundFromContext(ctx)
 	var dest *net.Destination
-	reader := &UDPReader{
-		Reader:    conn,
-		User:      inbound.User,
-		Validator: s.validator,
-	}
+	reader := buf.NewPacketReader(conn)
 	for {
-		mpayload, err := reader.ReadMultiBufferWithPassword(pwd)
+		mpayload, err := reader.ReadMultiBuffer()
 		if err != nil {
-			if _, ok := err.(*UDPDecodeError); ok {
+			break
+		}
+
+		for _, payload := range mpayload {
+			validator := s.validator
+			if inbound.User != nil {
+				validator = new(Validator)
+				if err := validator.Add(inbound.User); err != nil {
+					payload.Release()
+					return errors.New("failed to add shadowsocks user to UDP validator").Base(err)
+				}
+			}
+
+			decodePayload := payload
+			decodePwd := pwd
+			packetPwd, prefixLen, hasPasswordPrefix := readPasswordPrefixFromPacket(payload)
+			if hasPasswordPrefix {
+				decodePayload = buf.New()
+				decodePayload.Write(payload.BytesFrom(prefixLen))
+				decodePayload.UDP = payload.UDP
+				decodePwd = packetPwd
+			}
+
+			request, data, err := DecodeUDPPacket(validator, decodePayload, decodePwd)
+			if err != nil && hasPasswordPrefix {
+				decodePayload.Release()
+				decodePayload = payload
+				request, data, err = DecodeUDPPacket(validator, decodePayload, pwd)
+			}
+			if err != nil {
 				if inbound.Source.IsValid() {
 					errors.LogInfoInner(ctx, err, "dropping invalid UDP packet from: ", inbound.Source)
 					log.Record(&log.AccessMessage{
@@ -215,25 +262,18 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 						Reason: err,
 					})
 				}
+				decodePayload.Release()
 				continue
 			}
-			break
-		}
+			if hasPasswordPrefix && decodePayload != payload {
+				payload.Release()
+				pwd = packetPwd
+			}
 
-		request := reader.LastRequest()
-		if request == nil {
-			buf.ReleaseMulti(mpayload)
-			continue
-		}
+			if inbound.User == nil {
+				inbound.User = request.User
+			}
 
-		if inbound.User == nil {
-			inbound.User = request.User
-			// Pin the UDP session to the authenticated user for subsequent packets.
-			reader.User = inbound.User
-			reader.Validator = nil
-		}
-
-		for _, data := range mpayload {
 			destination := request.Destination()
 
 			currentPacketCtx := ctx

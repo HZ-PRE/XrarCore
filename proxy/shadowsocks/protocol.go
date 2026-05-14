@@ -253,6 +253,10 @@ func DecodeUDPPacket(validator *Validator, payload *buf.Buffer, pwd string) (*pr
 		return nil, nil, errors.New("unexpected error").Base(err)
 	}
 
+	if user == nil {
+		return nil, nil, errors.New("failed to match an user").Base(ErrNotFound)
+	}
+
 	account, ok := user.Account.(*MemoryAccount)
 	if !ok {
 		return nil, nil, errors.New("expected MemoryAccount returned from validator")

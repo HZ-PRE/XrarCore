@@ -186,8 +186,14 @@ func (c *udpConn) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	return mb, nil
 }
 
-func (c *udpConn) Read(buf []byte) (int, error) {
-	panic("not implemented")
+func (c *udpConn) Read(p []byte) (int, error) {
+	mb, err := c.ReadMultiBuffer()
+	if err != nil {
+		return 0, err
+	}
+	defer buf.ReleaseMulti(mb)
+
+	return mb.Copy(p), nil
 }
 
 // Write implements io.Writer.
