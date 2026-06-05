@@ -154,5 +154,5 @@ CGO_ENABLED=0 go build -o xray -trimpath -buildvcs=false -ldflags="-X github.com
 
 [![Stargazers over time](https://starchart.cc/XTLS/Xray-core.svg)](https://starchart.cc/XTLS/Xray-core)
 
-git tag v1.0.67
-git push origin v1.0.67
+git tag v1.0.68
+git push origin v1.0.68
