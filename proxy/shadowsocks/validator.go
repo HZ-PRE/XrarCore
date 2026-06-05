@@ -411,11 +411,11 @@ func checkAEADAndMatch(bs []byte, user *protocol.MemoryUser, command protocol.Re
 	var matchErr error
 	switch command {
 	case protocol.RequestCommandTCP:
-		data := make([]byte, 4+aead.NonceSize())
-		ret, matchErr = aead.Open(data[:0], data[4:], bs[ivLen:ivLen+18], nil)
+		var nonce [32]byte
+		ret, matchErr = aead.Open(nil, nonce[:aead.NonceSize()], bs[ivLen:ivLen+18], nil)
 	case protocol.RequestCommandUDP:
-		data := make([]byte, 8192)
-		ret, matchErr = aead.Open(data[:0], data[8192-aead.NonceSize():8192], bs[ivLen:], nil)
+		var nonce [32]byte
+		ret, matchErr = aead.Open(nil, nonce[:aead.NonceSize()], bs[ivLen:], nil)
 	}
 	if matchErr == nil {
 		u = user

@@ -128,7 +128,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 				return errors.New("failed to write request").Base(err)
 			}
 
-			if err = buf.CopyOnceTimeout(link.Reader, bodyWriter, time.Millisecond*100); err != nil && err != buf.ErrNotTimeoutReader && err != buf.ErrReadTimeout {
+			if err = buf.CopyOnceTimeout(link.Reader, bodyWriter, time.Millisecond*10); err != nil && err != buf.ErrNotTimeoutReader && err != buf.ErrReadTimeout {
 				return errors.New("failed to write A request payload").Base(err).AtWarning()
 			}
 
