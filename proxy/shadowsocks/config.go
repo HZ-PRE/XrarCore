@@ -138,6 +138,7 @@ type Cipher interface {
 	NewEncryptionWriter(key []byte, iv []byte, writer io.Writer) (buf.Writer, error)
 	NewDecryptionReader(key []byte, iv []byte, reader io.Reader) (buf.Reader, error)
 	IsAEAD() bool
+	PacketOverhead() int32
 	EncodePacket(key []byte, b *buf.Buffer) error
 	DecodePacket(key []byte, b *buf.Buffer) error
 }
@@ -158,6 +159,11 @@ func (c *AEADCipher) KeySize() int32 {
 
 func (c *AEADCipher) IVSize() int32 {
 	return c.IVBytes
+}
+
+func (c *AEADCipher) PacketOverhead() int32 {
+	auth := c.AEADAuthCreator(make([]byte, c.KeyBytes))
+	return c.IVSize() + int32(auth.Overhead())
 }
 
 func (c *AEADCipher) createAuthenticator(key []byte, iv []byte) *crypto.AEADAuthenticator {
@@ -217,6 +223,10 @@ func (NoneCipher) KeySize() int32 { return 0 }
 func (NoneCipher) IVSize() int32  { return 0 }
 func (NoneCipher) IsAEAD() bool {
 	return false
+}
+
+func (NoneCipher) PacketOverhead() int32 {
+	return 0
 }
 
 func (NoneCipher) NewDecryptionReader(key []byte, iv []byte, reader io.Reader) (buf.Reader, error) {

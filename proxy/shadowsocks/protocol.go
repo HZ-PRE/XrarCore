@@ -7,6 +7,7 @@ import (
 	goerrors "errors"
 	"hash/crc32"
 	"io"
+	"math"
 
 	"github.com/HZ-PRE/XrarCore/common"
 	"github.com/HZ-PRE/XrarCore/common/buf"
@@ -218,19 +219,38 @@ func EncodeUDPPacket(request *protocol.RequestHeader, payload []byte) (*buf.Buff
 	user := request.User
 	account := user.Account.(*MemoryAccount)
 
-	buffer := buf.New()
+	packetSize := int64(len(payload)) + int64(account.Cipher.PacketOverhead())
+	if request.Address.Family().IsDomain() {
+		packetSize += int64(len(request.Address.Domain())) + 4
+	} else {
+		packetSize += int64(len(request.Address.IP())) + 3
+	}
+
+	if packetSize > math.MaxInt32 {
+		return nil, errors.New("UDP packet size is too large: ", packetSize)
+	}
+
+	buffer := buf.NewWithSize(int32(packetSize))
 	ivLen := account.Cipher.IVSize()
 	if ivLen > 0 {
 		common.Must2(buffer.ReadFullFrom(rand.Reader, ivLen))
 	}
 
 	if err := addrParser.WriteAddressPort(buffer, request.Address, request.Port); err != nil {
+		buffer.Release()
 		return nil, errors.New("failed to write address").Base(err)
 	}
 
-	buffer.Write(payload)
+	if n, err := buffer.Write(payload); err != nil {
+		buffer.Release()
+		return nil, errors.New("failed to write UDP payload").Base(err)
+	} else if n != len(payload) {
+		buffer.Release()
+		return nil, errors.New("failed to write full UDP payload: ", n, " of ", len(payload))
+	}
 
 	if err := account.Cipher.EncodePacket(account.Key, buffer); err != nil {
+		buffer.Release()
 		return nil, errors.New("failed to encrypt UDP payload").Base(err)
 	}
 

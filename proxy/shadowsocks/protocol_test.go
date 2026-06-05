@@ -74,6 +74,43 @@ func TestUDPEncodingDecoding(t *testing.T) {
 	}
 }
 
+func TestUDPEncodingDecodingLargeAEADPayload(t *testing.T) {
+	request := protocol.RequestHeader{
+		Version: Version,
+		Command: protocol.RequestCommandUDP,
+		Address: net.LocalHostIP,
+		Port:    1234,
+		User: &protocol.MemoryUser{
+			Email: "love@example.com",
+			Account: toAccount(&Account{
+				Password:   "password",
+				CipherType: CipherType_AES_128_GCM,
+			}),
+		},
+	}
+
+	payload := make([]byte, buf.Size)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+
+	encodedData, err := EncodeUDPPacket(&request, payload)
+	common.Must(err)
+
+	validator := new(Validator)
+	validator.Add(request.User)
+	decodedRequest, decodedData, err := DecodeUDPPacket(validator, encodedData, "")
+	common.Must(err)
+
+	if r := cmp.Diff(decodedData.Bytes(), payload); r != "" {
+		t.Error("data: ", r)
+	}
+
+	if equalRequestHeader(decodedRequest, &request) == false {
+		t.Error("different request")
+	}
+}
+
 func TestUDPDecodingWithPayloadTooShort(t *testing.T) {
 	testAccounts := []protocol.Account{
 		toAccount(&Account{
