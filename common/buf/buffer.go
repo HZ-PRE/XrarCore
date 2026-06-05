@@ -93,6 +93,8 @@ func (b *Buffer) Release() {
 
 	if cap(p) == Size {
 		pool.Put(p)
+	} else {
+		bytespool.Free(p)
 	}
 	b.UDP = nil
 }

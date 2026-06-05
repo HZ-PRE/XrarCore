@@ -194,13 +194,20 @@ func (c *AEADCipher) NewDecryptionReader(key []byte, iv []byte, reader io.Reader
 func (c *AEADCipher) EncodePacket(key []byte, b *buf.Buffer) error {
 	ivLen := c.IVSize()
 	payloadLen := b.Len()
-	auth := c.createAuthenticator(key, b.BytesTo(ivLen))
+	if payloadLen < ivLen {
+		return errors.New("insufficient data: ", payloadLen)
+	}
 
-	b.Extend(int32(auth.Overhead()))
+	auth := c.createAuthenticator(key, b.BytesTo(ivLen))
+	overhead := int32(auth.Overhead())
+	if payloadLen+overhead > b.Cap() {
+		return errors.New("insufficient buffer capacity: ", payloadLen, " + ", overhead, " > ", b.Cap())
+	}
+
+	b.Extend(overhead)
 	_, err := auth.Seal(b.BytesTo(ivLen), b.BytesRange(ivLen, payloadLen))
 	return err
 }
-
 func (c *AEADCipher) DecodePacket(key []byte, b *buf.Buffer) error {
 	if b.Len() <= c.IVSize() {
 		return errors.New("insufficient data: ", b.Len())

@@ -10,6 +10,26 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
+func TestAEADCipherUDPEncodePacketReturnsErrorOnSmallBuffer(t *testing.T) {
+	rawAccount := &shadowsocks.Account{
+		CipherType: shadowsocks.CipherType_AES_128_GCM,
+		Password:   "test",
+	}
+	account, err := rawAccount.AsAccount()
+	common.Must(err)
+
+	cipher := account.(*shadowsocks.MemoryAccount).Cipher
+	key := make([]byte, cipher.KeySize())
+	common.Must2(rand.Read(key))
+
+	b := buf.New()
+	common.Must2(b.ReadFullFrom(rand.Reader, cipher.IVSize()))
+	common.Must2(b.Write(make([]byte, buf.Size-int(cipher.IVSize()))))
+	if err := cipher.EncodePacket(key, b); err == nil {
+		t.Fatal("expected insufficient capacity error")
+	}
+}
+
 func TestAEADCipherUDP(t *testing.T) {
 	rawAccount := &shadowsocks.Account{
 		CipherType: shadowsocks.CipherType_AES_128_GCM,
