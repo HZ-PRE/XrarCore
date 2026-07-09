@@ -316,6 +316,9 @@ func writeSocks4Response(writer io.Writer, errCode byte, address net.Address, po
 	common.Must(buffer.WriteByte(0x00))
 	common.Must(buffer.WriteByte(errCode))
 	portBytes := buffer.Extend(2)
+	if portBytes == nil {
+		return errors.New("failed to extend buffer")
+	}
 	binary.BigEndian.PutUint16(portBytes, port.Value())
 	common.Must2(buffer.Write(address.IP()))
 	return buf.WriteAllBytes(writer, buffer.Bytes(), nil)

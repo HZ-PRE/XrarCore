@@ -14,6 +14,9 @@ import (
 func PackMessage(msg *dnsmessage.Message) (*buf.Buffer, error) {
 	buffer := buf.New()
 	rawBytes := buffer.Extend(buf.Size)
+	if rawBytes == nil {
+		return nil, errors.New("failed to extend buffer")
+	}
 	packed, err := msg.AppendPack(rawBytes[:0])
 	if err != nil {
 		buffer.Release()

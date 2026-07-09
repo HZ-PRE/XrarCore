@@ -99,7 +99,11 @@ func (h *MultiHunkReaderWriter) ReadMultiBuffer() (buf.MultiBuffer, error) {
 		}
 
 		if cap(b) >= buf.Size {
-			mb = append(mb, buf.NewExisted(b))
+			bf, err := buf.NewExisted(b)
+			if err != nil {
+				return nil, err
+			}
+			mb = append(mb, bf)
 		} else {
 			nb := buf.New()
 			nb.Extend(int32(len(b)))

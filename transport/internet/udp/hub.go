@@ -87,6 +87,11 @@ func (h *Hub) start() {
 		var noob int
 		var addr *net.UDPAddr
 		rawBytes := buffer.Extend(buf.Size)
+		if rawBytes == nil {
+			errors.LogInfoInner(context.Background(), errors.New("failed to extend buffer"), "")
+			buffer.Release()
+			break
+		}
 
 		n, noob, _, addr, err := ReadUDPMsg(h.conn, rawBytes, oobBytes)
 		if err != nil {

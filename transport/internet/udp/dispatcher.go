@@ -197,6 +197,9 @@ s:
 func (c *dispatcherConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	buffer := buf.New()
 	raw := buffer.Extend(buf.Size)
+	if raw == nil {
+		return 0, errors.New("failed to extend buffer")
+	}
 	n := copy(raw, p)
 	buffer.Resize(0, int32(n))
 

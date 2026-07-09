@@ -151,6 +151,9 @@ func SniffQUIC(b []byte) (resultReturn *SniffHeader, errorReturn error) {
 		defer cache.Release()
 
 		mask := cache.Extend(int32(block.BlockSize()))
+		if mask == nil {
+			return nil, errors.New("failed to extend buffer")
+		}
 		block.Encrypt(mask, b[hdrLen+4:hdrLen+4+16])
 		b[0] ^= mask[0] & 0xf
 		for i := range b[hdrLen : hdrLen+4] {

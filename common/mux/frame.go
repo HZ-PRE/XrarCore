@@ -64,9 +64,15 @@ type FrameMetadata struct {
 
 func (f FrameMetadata) WriteTo(b *buf.Buffer) error {
 	lenBytes := b.Extend(2)
+	if lenBytes == nil {
+		return errors.New("buffer overflow")
+	}
 
 	len0 := b.Len()
 	sessionBytes := b.Extend(2)
+	if sessionBytes == nil {
+		return errors.New("buffer overflow")
+	}
 	binary.BigEndian.PutUint16(sessionBytes, f.SessionID)
 
 	common.Must(b.WriteByte(byte(f.SessionStatus)))

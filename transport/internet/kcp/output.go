@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/HZ-PRE/XrarCore/common/buf"
+	"github.com/HZ-PRE/XrarCore/common/errors"
 	"github.com/HZ-PRE/XrarCore/common/retry"
 )
 
@@ -31,6 +32,9 @@ func (w *SimpleSegmentWriter) Write(seg Segment) error {
 
 	w.buffer.Clear()
 	rawBytes := w.buffer.Extend(seg.ByteSize())
+	if rawBytes == nil {
+		return errors.New("failed to extend buffer")
+	}
 	seg.Serialize(rawBytes)
 	_, err := w.writer.Write(w.buffer.Bytes())
 	return err

@@ -204,7 +204,10 @@ func (c *AEADCipher) EncodePacket(key []byte, b *buf.Buffer) error {
 		return errors.New("insufficient buffer capacity: ", payloadLen, " + ", overhead, " > ", b.Cap())
 	}
 
-	b.Extend(overhead)
+	bf := b.Extend(overhead)
+	if bf == nil {
+		return errors.New("failed to extend buffer")
+	}
 	_, err := auth.Seal(b.BytesTo(ivLen), b.BytesRange(ivLen, payloadLen))
 	return err
 }

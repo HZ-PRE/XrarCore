@@ -47,6 +47,9 @@ func (r *cachedReader) Cache(b *buf.Buffer) {
 		*b = *buf.NewWithSize(cacheLen)
 	}
 	rawBytes := b.Extend(cacheLen)
+	if rawBytes == nil {
+		return
+	}
 	n := r.cache.Copy(rawBytes)
 	b.Resize(0, int32(n))
 	r.Unlock()

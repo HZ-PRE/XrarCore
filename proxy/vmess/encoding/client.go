@@ -92,6 +92,9 @@ func (c *ClientSession) EncodeRequestHeader(header *protocol.RequestHeader, writ
 		fnv1a := fnv.New32a()
 		common.Must2(fnv1a.Write(buffer.Bytes()))
 		hashBytes := buffer.Extend(int32(fnv1a.Size()))
+		if hashBytes == nil {
+			return nil
+		}
 		fnv1a.Sum(hashBytes[:0])
 	}
 

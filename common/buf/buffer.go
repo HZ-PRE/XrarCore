@@ -41,9 +41,9 @@ func New() *Buffer {
 }
 
 // NewExisted creates a managed, standard size Buffer with an existed bytearray
-func NewExisted(b []byte) *Buffer {
+func NewExisted(b []byte) (*Buffer, error) {
 	if cap(b) < Size {
-		panic("Invalid buffer")
+		return nil, errors.New("Invalid buffer")
 	}
 
 	oLen := len(b)
@@ -54,7 +54,7 @@ func NewExisted(b []byte) *Buffer {
 	return &Buffer{
 		v:   b,
 		end: int32(oLen),
-	}
+	}, nil
 }
 
 // FromBytes creates a Buffer with an existed bytearray
@@ -124,12 +124,16 @@ func (b *Buffer) Bytes() []byte {
 // Extend increases the buffer size by n bytes, and returns the extended part.
 // It panics if result size is larger than buf.Size.
 func (b *Buffer) Extend(n int32) []byte {
-	end := b.end + n
-	if end > int32(len(b.v)) {
-		panic("extending out of bound")
+	if n <= 0 {
+		return nil
 	}
+	if b.end+n > int32(len(b.v)) {
+		return nil
+	}
+	end := b.end + n
 	ext := b.v[b.end:end]
 	b.end = end
+
 	return ext
 }
 
