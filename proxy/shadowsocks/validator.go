@@ -20,7 +20,7 @@ import (
 type Validator struct {
 	sync.RWMutex
 	users          sync.Map
-	usersByUUID    sync.Map
+	usersByUID     sync.Map
 	userSize       int
 	legacyUsers    sync.Map
 	onUsers        sync.Map
@@ -49,16 +49,16 @@ func (v *Validator) Add(u *protocol.MemoryUser) error {
 
 	account := u.Account.(*MemoryAccount)
 	email := strings.ToLower(u.Email)
-	uuid := strings.ToLower(account.Password)
 	v.userSize = v.userSize + 1
 	if !account.Cipher.IsAEAD() {
 		v.legacyUsers.Store(email, u)
 		return nil
 	}
 	v.users.Store(email, u)
-	if uuid != "" {
-		v.usersByUUID.Store(uuid, u)
-	}
+	parts := strings.Split(email, "|")
+	// 获取切片的最后一个元素
+	lastPart := parts[len(parts)-1]
+	v.usersByUID.Store(lastPart, u)
 	if !v.behaviorFused {
 		hashkdf := hmac.New(sha256.New, []byte("SSBSKDF"))
 		hashkdf.Write(account.Key)
@@ -87,11 +87,10 @@ func (v *Validator) Del(email string) error {
 	if user == nil {
 		return nil
 	}
-	account := user.Account.(*MemoryAccount)
-	uuid := strings.ToLower(account.Password)
-	if uuid != "" {
-		v.usersByUUID.Delete(uuid)
-	}
+	parts := strings.Split(email, "|")
+	// 获取切片的最后一个元素
+	lastPart := parts[len(parts)-1]
+	v.usersByUID.Delete(lastPart)
 	v.onUsers.Delete(email)
 	v.onHourUsers.Delete(email)
 	v.onDayUsers.Delete(email)
@@ -136,12 +135,12 @@ func (v *Validator) DetOnUsers() {
 }
 
 // GetByUUID gets a Shadowsocks user by uuid (uuid is stored in user.Account.Password).
-func (v *Validator) GetByUUID(uuid string) *protocol.MemoryUser {
-	if uuid == "" {
+func (v *Validator) GetByUID(uid string) *protocol.MemoryUser {
+	if uid == "" {
 		return nil
 	}
-	uuid = strings.ToLower(uuid)
-	if value, ok := v.usersByUUID.Load(uuid); ok {
+	uid = strings.ToLower(uid)
+	if value, ok := v.usersByUID.Load(uid); ok {
 		return value.(*protocol.MemoryUser)
 	}
 	return nil
@@ -183,12 +182,12 @@ func (v *Validator) GetCount() int64 {
 }
 
 // Get a Shadowsocks user.
-func (v *Validator) Get(bs []byte, command protocol.RequestCommand, pwd string) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
+func (v *Validator) Get(bs []byte, command protocol.RequestCommand, uid string) (u *protocol.MemoryUser, aead cipher.AEAD, ret []byte, ivLen int32, err error) {
 	v.RLock()
 	defer v.RUnlock()
-	if pwd != "" {
-		uuid := strings.ToLower(pwd)
-		if value, ok := v.usersByUUID.Load(uuid); ok {
+	if uid != "" {
+		uid := strings.ToLower(uid)
+		if value, ok := v.usersByUID.Load(uid); ok {
 			u1 := value.(*protocol.MemoryUser)
 			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)
 			if u == nil {

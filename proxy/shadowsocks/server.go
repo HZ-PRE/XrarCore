@@ -128,16 +128,6 @@ func wrapConn(conn net.Conn, r io.Reader) net.Conn {
 
 const passwordPrefixMagic byte = 0xAA
 
-var passwordXORKey = []byte("qaz159")
-
-func xor(data, key []byte) []byte {
-	out := make([]byte, len(data))
-	for i := range data {
-		out[i] = data[i] ^ key[i%len(key)]
-	}
-	return out
-}
-
 func readPasswordPrefix(r *bufio.Reader) string {
 	peek, err := r.Peek(2)
 	if err != nil || len(peek) != 2 || peek[0] != passwordPrefixMagic {
@@ -154,7 +144,7 @@ func readPasswordPrefix(r *bufio.Reader) string {
 	if _, err := io.ReadFull(r, header); err != nil {
 		return ""
 	}
-	return string(xor(header[2:], passwordXORKey))
+	return string(header[2:])
 }
 
 func readPasswordPrefixFromPacket(payload *buf.Buffer) (string, int32, bool) {
@@ -168,7 +158,7 @@ func readPasswordPrefixFromPacket(payload *buf.Buffer) (string, int32, bool) {
 		return "", 0, false
 	}
 
-	return string(xor(payload.BytesRange(2, total), passwordXORKey)), total, true
+	return string(payload.BytesRange(2, total)), total, true
 }
 
 func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Connection, dispatcher routing.Dispatcher) error {
@@ -187,7 +177,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	return s.handleConnection(ctx, conn, dispatcher, readPasswordPrefix(br))
 }
 
-func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher, pwd string) error {
+func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher, uid string) error {
 	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
 		request := protocol.RequestHeaderFromContext(ctx)
 		if request == nil {
@@ -237,20 +227,20 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			}
 
 			decodePayload := payload
-			decodePwd := pwd
-			packetPwd, prefixLen, hasPasswordPrefix := readPasswordPrefixFromPacket(payload)
+			decodeUid := uid
+			packetUid, prefixLen, hasPasswordPrefix := readPasswordPrefixFromPacket(payload)
 			if hasPasswordPrefix {
 				decodePayload = buf.New()
 				decodePayload.Write(payload.BytesFrom(prefixLen))
 				decodePayload.UDP = payload.UDP
-				decodePwd = packetPwd
+				decodeUid = packetUid
 			}
 
-			request, data, err := DecodeUDPPacket(validator, decodePayload, decodePwd)
+			request, data, err := DecodeUDPPacket(validator, decodePayload, decodeUid)
 			if err != nil && hasPasswordPrefix {
 				decodePayload.Release()
 				decodePayload = payload
-				request, data, err = DecodeUDPPacket(validator, decodePayload, pwd)
+				request, data, err = DecodeUDPPacket(validator, decodePayload, uid)
 			}
 			if err != nil {
 				if inbound.Source.IsValid() {
@@ -267,7 +257,7 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			}
 			if hasPasswordPrefix && decodePayload != payload {
 				payload.Release()
-				pwd = packetPwd
+				uid = packetUid
 			}
 
 			if inbound.User == nil {
@@ -304,14 +294,14 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 	return nil
 }
 
-func (s *Server) handleConnection(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher, pwd string) error {
+func (s *Server) handleConnection(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher, uid string) error {
 	sessionPolicy := s.policyManager.ForLevel(0)
 	if err := conn.SetReadDeadline(time.Now().Add(sessionPolicy.Timeouts.Handshake)); err != nil {
 		return errors.New("unable to set read deadline").Base(err).AtWarning()
 	}
 
 	bufferedReader := buf.BufferedReader{Reader: buf.NewReader(conn)}
-	request, bodyReader, err := ReadTCPSession(s.validator, &bufferedReader, pwd)
+	request, bodyReader, err := ReadTCPSession(s.validator, &bufferedReader, uid)
 	if err != nil {
 		log.Record(&log.AccessMessage{
 			From:   conn.RemoteAddr(),
