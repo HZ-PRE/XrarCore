@@ -5,7 +5,6 @@ import (
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
-	"fmt"
 	"hash/crc64"
 	"runtime"
 	"strings"
@@ -188,7 +187,6 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand, uid string) 
 	defer v.RUnlock()
 	if uid != "" {
 		uid := strings.ToLower(uid)
-		fmt.Println("new uid:", uid)
 		if value, ok := v.usersByUID.Load(uid); ok {
 			u1 := value.(*protocol.MemoryUser)
 			u, aead, ret, ivLen, err = checkAEADAndMatch(bs, u1, command)

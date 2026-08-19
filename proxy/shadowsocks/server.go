@@ -3,7 +3,6 @@ package shadowsocks
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"io"
 	sync "sync"
 	"time"
@@ -229,23 +228,16 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 
 			decodePayload := payload
 			decodeUid := ""
+
 			packetUid, prefixLen, hasPasswordPrefix := readPasswordPrefixFromPacket(payload)
-			fmt.Printf(
-				"[SERVER UDP] len=%d\nDATA=%x\n",
-				payload.Len(),
-				payload.Bytes(),
-			)
 			if hasPasswordPrefix {
-				decodePayload := buf.New()
-				decodePayload.Write(payload.BytesFrom(prefixLen))
-				decodePayload.UDP = payload.UDP
+				strippedPayload := buf.New()
+				strippedPayload.Write(payload.BytesFrom(prefixLen))
+				strippedPayload.UDP = payload.UDP
+				decodePayload = strippedPayload
 				decodeUid = packetUid
-				fmt.Printf(
-					"[SERVER UDP AFTER UID] len=%d\nDATA=%x\n",
-					decodePayload.Len(),
-					decodePayload.Bytes(),
-				)
 			}
+
 			request, data, err := DecodeUDPPacket(validator, decodePayload, decodeUid)
 			if err != nil {
 				if inbound.Source.IsValid() {
