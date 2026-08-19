@@ -166,7 +166,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	inbound.Name = "shadowsocks"
 	inbound.CanSpliceCopy = 3
 	if network == net.Network_UDP {
-		return s.handleUDPPayload(ctx, conn, dispatcher, "")
+		return s.handleUDPPayload(ctx, conn, dispatcher)
 	}
 	if network != net.Network_TCP {
 		return errors.New("unknown network: ", network)
@@ -177,7 +177,7 @@ func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Con
 	return s.handleConnection(ctx, conn, dispatcher, readPasswordPrefix(br))
 }
 
-func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher, uid string) error {
+func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dispatcher routing.Dispatcher) error {
 	udpServer := udp.NewDispatcher(dispatcher, func(ctx context.Context, packet *udp_proto.Packet) {
 		request := protocol.RequestHeaderFromContext(ctx)
 		if request == nil {
@@ -227,7 +227,7 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			}
 
 			decodePayload := payload
-			decodeUid := uid
+			decodeUid := ""
 			packetUid, prefixLen, hasPasswordPrefix := readPasswordPrefixFromPacket(payload)
 			if hasPasswordPrefix {
 				decodePayload = buf.New()
@@ -235,13 +235,7 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 				decodePayload.UDP = payload.UDP
 				decodeUid = packetUid
 			}
-
 			request, data, err := DecodeUDPPacket(validator, decodePayload, decodeUid)
-			if err != nil && hasPasswordPrefix {
-				decodePayload.Release()
-				decodePayload = payload
-				request, data, err = DecodeUDPPacket(validator, decodePayload, uid)
-			}
 			if err != nil {
 				if inbound.Source.IsValid() {
 					errors.LogInfoInner(ctx, err, "dropping invalid UDP packet from: ", inbound.Source)
@@ -257,7 +251,6 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 			}
 			if hasPasswordPrefix && decodePayload != payload {
 				payload.Release()
-				uid = packetUid
 			}
 
 			if inbound.User == nil {
