@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	goerrors "errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"math"
@@ -73,6 +74,8 @@ func ReadTCPSession(validator *Validator, reader io.Reader, uid string) (*protoc
 	}
 
 	bs := buffer.Bytes()
+
+	fmt.Println("TCP new uid:", uid)
 	user, aead, _, ivLen, err := validator.Get(bs, protocol.RequestCommandTCP, uid)
 
 	switch err {
@@ -259,6 +262,8 @@ func EncodeUDPPacket(request *protocol.RequestHeader, payload []byte) (*buf.Buff
 
 func DecodeUDPPacket(validator *Validator, payload *buf.Buffer, uid string) (*protocol.RequestHeader, *buf.Buffer, error) {
 	rawPayload := payload.Bytes()
+
+	fmt.Println("UDP new uid:", uid)
 	user, _, d, _, err := validator.Get(rawPayload, protocol.RequestCommandUDP, uid)
 
 	if goerrors.Is(err, ErrIVNotUnique) {
